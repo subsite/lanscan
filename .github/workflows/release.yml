@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: Install tools
         run: |
-          dnf install -y git make tar rpm-build python3-rpm-macros \
+          dnf install -y git make tar rpm-build \
             desktop-file-utils python3-gobject python3-cairo gtk4 \
             libadwaita
       - uses: actions/checkout@v4

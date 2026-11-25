@@ -23,8 +23,7 @@ build_rpm() {
 
 build_deb() {
     root=$WORK/deb
-    make install DESTDIR="$root" \
-        PYDIR=/usr/lib/python3/dist-packages
+    make install DESTDIR="$root"
     mkdir -p "$root/DEBIAN" "$root/usr/share/doc/lanscan"
     printf '%s\n' "LAN Scan, by SubSite - Fredrik Welander" \
         "Source: https://github.com/subsite/lanscan" \

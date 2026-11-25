@@ -1,6 +1,10 @@
 #!/usr/bin/python3
 import sys
 
-from lanscan.app import main
+# The app lives in a directory of its own, not in a site-packages
+# folder that belongs to one Python version. Filled in by "make install".
+sys.path.insert(0, "@PYDIR@")
+
+from lanscan.app import main  # noqa: E402
 
 sys.exit(main())

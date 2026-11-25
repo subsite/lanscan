@@ -88,15 +88,20 @@ scan, while access points are remembered for a month.
 
 ## Install
 
-Each release on GitHub has an RPM (Fedora) and a deb (Debian 13,
-Ubuntu 24.10 or newer). They pull in nmap and everything else needed:
+Each release on GitHub has an RPM and a deb (Debian 13, Ubuntu 24.10
+or newer). They pull in nmap and everything else needed:
 
     sudo dnf install ./lanscan-*.noarch.rpm
     sudo apt install ./lanscan_*_all.deb
 
-The RPM is built on the current Fedora release and only installs on
-that one. On other distributions, install the requirements below and
-run it from a checkout with `python3 -m lanscan`.
+The RPM is made for Fedora and its relatives and for openSUSE
+Tumbleweed (`sudo zypper install ./lanscan-*.noarch.rpm`); it is only
+tested on Fedora. Any system needs GTK 4 with libadwaita 1.6 or newer,
+which rules out older releases such as RHEL 9 and openSUSE Leap 15.
+
+The packages do not depend on a particular Python version. On other
+distributions, install the requirements below and run it from a
+checkout with `python3 -m lanscan`.
 
 Build the packages yourself with `tools/build-packages.sh rpm` or
 `tools/build-packages.sh deb`; they end up in `dist/`.
