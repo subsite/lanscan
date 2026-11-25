@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lanscan"
+version = "0.1.0"
+description = "Graphical overview of the devices on your local network"
+requires-python = ">=3.10"
+dependencies = ["PyGObject>=3.46"]
+
+[project.gui-scripts]
+lanscan = "lanscan.app:main"
+
+[tool.setuptools]
+packages = ["lanscan"]
+
+[tool.setuptools.package-data]
+lanscan = ["icons/*.svg"]

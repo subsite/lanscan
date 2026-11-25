@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LAN Scan
+Comment=Overview of the devices on your network
+Exec=lanscan
+Icon=network-workgroup
+Categories=Network;GTK;
+Terminal=false
