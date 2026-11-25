@@ -5,6 +5,7 @@ import time
 from gi.repository import Gio, GObject
 
 from .osguess import guess_os
+from .wifi import band_of, channel_of
 
 # key, label, icon
 TYPES = [
@@ -55,10 +56,20 @@ FIELDS = {
     "ttl": 0,  # hops left on its ping replies
     "service_os": "",  # OS according to its services, SMB or SNMP
     "upnp_server": "",
+    # Wi-Fi scan results; these live in a table of their own.
+    "wifi": "",  # "ap", "client" or "" for a device on a network
+    "ssid": "",  # network name (for a client: of its access point)
+    "bssid": "",  # the access point a client talks to
+    "freq": 0,  # MHz
+    "signal": 0,  # dBm, 0 = unknown
+    "security": "",
+    "probes": None,  # networks a client asked for
+    "mine": False,  # Wi-Fi: belongs to one of the scanned networks
 }
-JSON_FIELDS = ("ports", "services")
+JSON_FIELDS = ("ports", "services", "probes")
+
 NOT_SCANNED = "Ports not scanned yet"
-BOOL_FIELDS = ("online", "known", "is_gateway", "is_self")
+BOOL_FIELDS = ("online", "known", "is_gateway", "is_self", "mine")
 
 
 # Well-known ports in order of how interesting they are in a summary,
@@ -139,9 +150,16 @@ class Device(GObject.Object):
             setattr(self, name, value)
 
     @property
+    def table(self):
+        """Database table this device is stored in."""
+        return "wifi" if self.wifi else "devices"
+
+    @property
     def display_name(self):
         if self.custom_name:
             return self.custom_name
+        if self.wifi == "ap":
+            return self.ssid or "Hidden network"
         if self.friendly_name:
             return self.friendly_name
         for name in (self.mdns_name, self.hostname):
@@ -168,7 +186,36 @@ class Device(GObject.Object):
 
     @property
     def status_text(self):
+        if self.wifi:
+            return "In range" if self.online else "Out of range"
         return "Online" if self.online else "Offline"
+
+    @property
+    def signal_text(self):
+        return f"{self.signal} dBm" if self.signal else ""
+
+    @property
+    def channel_text(self):
+        """'5 GHz, channel 36'"""
+        if not self.freq:
+            return ""
+        return f"{band_of(self.freq)}, channel {channel_of(self.freq)}"
+
+    @property
+    def wifi_text(self):
+        """One-line summary of a Wi-Fi access point or client."""
+        if self.wifi == "ap":
+            parts = [self.channel_text.replace(", channel", " ch"),
+                     self.security, self.signal_text]
+        elif self.bssid:
+            parts = [f"on {self.ssid or self.bssid}", self.signal_text]
+        else:
+            parts = ["not connected", self.signal_text]
+        return " · ".join(p for p in parts if p)
+
+    @property
+    def summary_text(self):
+        return self.wifi_text if self.wifi else self.top_services()
 
     @property
     def vendor_text(self):
@@ -177,6 +224,8 @@ class Device(GObject.Object):
         return "Private address" if is_random_mac(self.mac) else ""
 
     def ip_sort_key(self):
+        if self.wifi:  # access points first, strongest on top
+            return (999, self.wifi != "ap", -self.signal or 999)
         try:
             return tuple(int(p) for p in self.ip.split("."))
         except ValueError:
@@ -195,7 +244,7 @@ class Device(GObject.Object):
         haystack = (
             self.display_name, self.ip, self.mac, self.vendor, self.hostname,
             self.mdns_name, TYPE_LABELS[self.type], self.os_text, self.model,
-            self.friendly_name,
+            self.friendly_name, self.ssid, self.security,
         )
         return any(text in (h or "").lower() for h in haystack)
 
@@ -220,6 +269,8 @@ class Device(GObject.Object):
     def service_rows(self):
         """(text, url) for the expandable rows in the list view; url is
         '' unless the service is a web server."""
+        if self.wifi:
+            return [(text, "") for text in self._wifi_lines() if text]
         rows = []
         for port in self.ports or []:
             line = f"{port['port']}/{port.get('proto', 'tcp')}"
@@ -236,6 +287,19 @@ class Device(GObject.Object):
         elif not self.ports:
             rows.append(("No open ports found", ""))
         return rows
+
+    def _wifi_lines(self):
+        if self.wifi == "ap":
+            return [self.channel_text,
+                    f"Security   {self.security}" if self.security else "",
+                    f"Signal   {self.signal_text}" if self.signal else ""]
+        lines = [f"Connected to   {self.ssid or 'a hidden network'} "
+                 f"({self.bssid})" if self.bssid
+                 else "Not connected to a network",
+                 f"Signal   {self.signal_text}" if self.signal else ""]
+        if self.probes:
+            lines.append("Looked for   " + ", ".join(self.probes))
+        return lines
 
     def service_lines(self):
         return [text for text, _url in self.service_rows()]
@@ -360,7 +424,7 @@ def _lookup(hints, text):
 
 def guess_type(device):
     """Best-effort device type, from the most to the least reliable clue."""
-    if device.is_gateway:
+    if device.is_gateway or getattr(device, "wifi", "") == "ap":
         return "router"
     services = " ".join(device.services or []).lower()
     names = " ".join((

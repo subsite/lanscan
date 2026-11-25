@@ -67,13 +67,14 @@ def even_layout(count, rx, ry):
         angles, [radii[order[i % rings]] for i in range(count)], rx, ry)
 
 
-def organic_layout(items, rx, ry):
+def organic_layout(items, rx, ry, box=None):
     """Scatter nodes around (0, 0). `items` is [(key, fraction)]; the
     fraction is the distance (scaled to the radii rx, ry). The keys put
     the nodes in a stable pseudo-random order around the circle, each
     in its own direction, so no line runs through another node.
     Overlapping nodes are nudged apart, so distances are approximate
-    where it is crowded. Returns [(x, y)]."""
+    where it is crowded. `box` is the room (width, height) one node
+    needs. Returns [(x, y)]."""
     count = len(items)
     around = sorted(range(count), key=lambda i: (_unit(items[i][0]), i))
     start = 2 * math.pi * _unit(items[around[0]][0]) if count else 0
@@ -81,14 +82,16 @@ def organic_layout(items, rx, ry):
     for slot, i in enumerate(around):
         angles[i] = start + 2 * math.pi * slot / count
     return _relax(
-        angles, [INNER + (1 - INNER) * t for _key, t in items], rx, ry)
+        angles, [INNER + (1 - INNER) * t for _key, t in items], rx, ry,
+        box)
 
 
-def _relax(angles, want, rx, ry):
+def _relax(angles, want, rx, ry, box=None):
     """Place nodes at the given directions and distances (fractions of
     rx, ry), then move overlapping ones apart. Nodes are moved outwards
     along their own direction, which keeps them off each other's
     lines; only if that is not enough they are nudged sideways."""
+    box_w, box_h = box or (BOX_W, BOX_H)
     pts = []
     for angle, r in zip(angles, want):
         pts.append([math.cos(angle) * r * rx, math.sin(angle) * r * ry])
@@ -100,12 +103,12 @@ def _relax(angles, want, rx, ry):
         """(i, j, x overlap, y overlap); j is None for the middle node."""
         found = []
         for i, point in enumerate(pts):
-            ox, oy = BOX_W - abs(point[0]), BOX_H - abs(point[1])
+            ox, oy = box_w - abs(point[0]), box_h - abs(point[1])
             if ox > 0 and oy > 0:
                 found.append((i, None, ox, oy))
             for j in range(i + 1, len(pts)):
-                ox = BOX_W - abs(pts[j][0] - point[0])
-                oy = BOX_H - abs(pts[j][1] - point[1])
+                ox = box_w - abs(pts[j][0] - point[0])
+                oy = box_h - abs(pts[j][1] - point[1])
                 if ox > 0 and oy > 0:
                     found.append((i, j, ox, oy))
         return found
@@ -134,7 +137,7 @@ def _relax(angles, want, rx, ry):
         for i, j, ox, oy in found:
             a = pts[i]
             b = pts[j] if j is not None else [0.0, 0.0]
-            if ox / BOX_W < oy / BOX_H:
+            if ox / box_w < oy / box_h:
                 axis, shift = 0, ox / 2 + 0.5
             else:
                 axis, shift = 1, oy / 2 + 0.5
@@ -180,6 +183,7 @@ class MapView(Gtk.Widget):
         self.networks = []  # (name, IPv4Network)
         self.topology = False  # gateway in the middle, no ping distances
         self._on_pick = on_pick
+        self.wifi_note = lambda dev: ""  # set by the window
         self._nodes = []  # (x, y, radius, device)
         self._icons = {}
         self._layouts = {}
@@ -205,8 +209,10 @@ class MapView(Gtk.Widget):
         self.queue_draw()
 
     def _devices(self):
-        return [self.model.get_item(i)
-                for i in range(self.model.get_n_items())]
+        """The devices this map shows: those on the networks."""
+        items = (self.model.get_item(i)
+                 for i in range(self.model.get_n_items()))
+        return [d for d in items if not d.wifi]
 
     def _scatter(self, items, rx, ry):
         """Cached layout; `items` is a node count for an even spread."""
@@ -275,7 +281,8 @@ class MapView(Gtk.Widget):
         lines = [dev.display_name, dev.ip, dev.mac, dev.vendor_text,
                  dev.model, dev.os_text, dev.top_services(),
                  dev.status_text,
-                 f"Ping {ping}" if ping and not dev.is_self else ""]
+                 f"Ping {ping}" if ping and not dev.is_self else "",
+                 self.wifi_note(dev)]
         tooltip.set_text("\n".join(l for l in lines if l))
         return True
 

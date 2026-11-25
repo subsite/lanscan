@@ -15,9 +15,11 @@ def _property_row(title):
 
 class DetailPane(Gtk.Box):
     """Callbacks: on_edit(dev), on_scan_ports(dev), on_forget(dev),
-    on_close()."""
+    on_close(); wifi_for(dev) gives what a Wi-Fi scan knows about a
+    device on a network, or None."""
 
-    def __init__(self, on_edit, on_scan_ports, on_forget, on_close):
+    def __init__(self, on_edit, on_scan_ports, on_forget, on_close,
+                 wifi_for=lambda dev: None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.device = None
         self._handler = 0
@@ -25,6 +27,7 @@ class DetailPane(Gtk.Box):
         self._on_edit = on_edit
         self._on_scan_ports = on_scan_ports
         self._on_forget = on_forget
+        self._wifi_for = wifi_for
         self._port_rows = []
 
         header = Adw.HeaderBar(
@@ -37,7 +40,14 @@ class DetailPane(Gtk.Box):
         header.pack_end(close)
         self.append(header)
 
-        page = Adw.PreferencesPage(vexpand=True)
+        self._empty = Adw.StatusPage(
+            icon_name="sidebar-show-right-symbolic", vexpand=True,
+            title="No Device Selected",
+            description="Click a device in the list or on a map "
+                        "to see its details here.",
+            css_classes=["compact"])
+        self.append(self._empty)
+        page = self._page = Adw.PreferencesPage(vexpand=True, visible=False)
         self.append(page)
 
         group = Adw.PreferencesGroup()
@@ -57,7 +67,10 @@ class DetailPane(Gtk.Box):
         for key, title in (
                 ("status", "Status"), ("ip", "IP address"),
                 ("mac", "MAC address"), ("vendor", "Vendor"),
-                ("model", "Model"),
+                ("model", "Model"), ("ssid", "Wi-Fi network"),
+                ("channel", "Channel"), ("security", "Security"),
+                ("signal", "Signal"), ("probes", "Looked for"),
+                ("wifi", "Wi-Fi"),
                 ("hostname", "Hostname"), ("mdns_name", "mDNS name"),
                 ("services", "Announced services"),
                 ("first_seen", "First seen"), ("last_seen", "Last seen")):
@@ -91,6 +104,10 @@ class DetailPane(Gtk.Box):
             self.device.disconnect(self._handler)
             self._handler = 0
         self.device = device
+        self._page.set_visible(device is not None)
+        self._empty.set_visible(device is None)
+        if device is None:
+            self._title.set_title("")
         if device is not None:
             self._handler = device.connect("changed", lambda _d: self.update())
             self._loading = True
@@ -110,15 +127,27 @@ class DetailPane(Gtk.Box):
         self._type.set_subtitle("" if index else f"Detected: {guessed}")
 
         status = dev.status_text
+        # The same device as a Wi-Fi scan saw it.
+        seen = None if dev.wifi else self._wifi_for(dev)
+        self._ports_group.set_visible(not dev.wifi)
         if dev.is_self:
             status += " · this computer"
         if dev.is_gateway:
             status += " · gateway"
+        if dev.mine:
+            status += " · yours"
         if not dev.known:
             status += " · new"
         values = {
             "status": status, "ip": dev.ip, "mac": dev.mac,
             "vendor": dev.vendor_text, "model": dev.model,
+            "ssid": (dev.ssid or "Hidden network") if dev.wifi == "ap" else (
+                f"{dev.ssid or 'Hidden network'} ({dev.bssid})"
+                if dev.bssid else ""),
+            "channel": dev.channel_text, "security": dev.security,
+            "signal": dev.signal_text,
+            "probes": ", ".join(dev.probes or []),
+            "wifi": getattr(seen, "wifi_text", ""),
             "hostname": dev.hostname,
             "mdns_name": dev.mdns_name,
             "services": ", ".join(

@@ -3,7 +3,12 @@ import math
 import unittest
 
 import lanscan  # noqa: F401  (sets gi versions)
-from lanscan import netinfo, scanner
+import struct
+
+from lanscan import netinfo, scanner, wifi, wifimon
+from lanscan.wifilist import (
+    LOOSE, WifiGroup, group_wifi, row_clients, row_name, sort_rank)
+from lanscan.wifimap import orbit_positions, wifi_layout, wifi_networks
 from lanscan.device import Device, guess_type
 from lanscan.mapview import even_layout, organic_layout, rtt_fraction
 from lanscan.scanner import Host
@@ -597,3 +602,300 @@ class DeviceTest(unittest.TestCase):
         self.assertEqual(osguess.parse_snmp(reply), "RouterX")
         self.assertEqual(osguess.parse_snmp(b"\x30\x05junk"), "")
         self.assertEqual(len(osguess.SNMP_GET), osguess.SNMP_GET[1] + 2)
+
+
+AP1, AP2 = "AA:BB:CC:00:00:01", "AA:BB:CC:00:00:02"
+STA1, STA2, STA3 = (
+    "12:00:00:00:00:01", "12:00:00:00:00:02", "12:00:00:00:00:03")
+
+
+def _raw(mac):
+    return bytes.fromhex(mac.replace(":", ""))
+
+
+def _radiotap(frame, freq=2437, signal=-50, flags=0):
+    """Radiotap header with flags, channel and signal in front."""
+    return struct.pack(
+        "<BBHIBxHHb", 0, 0, 15, 0b101010, flags, freq, 0, signal) + frame
+
+
+def _element(number, value):
+    return bytes([number, len(value)]) + value
+
+
+RSN = (b"\x01\x00" + b"\x00\x0f\xac\x04" + b"\x01\x00\x00\x0f\xac\x04"
+       + b"\x02\x00\x00\x0f\xac\x02\x00\x0f\xac\x08" + b"\x00\x00")
+
+
+def _beacon(bssid, ssid, channel, elements=b"", privacy=True):
+    return (b"\x80\x00\x00\x00" + b"\xff" * 6 + _raw(bssid) * 2
+            + b"\x00\x00" + bytes(10)
+            + bytes([0x11 if privacy else 0x01, 0])
+            + _element(0, ssid) + _element(3, bytes([channel])) + elements)
+
+
+def _data(first, second, to_ap):
+    return (bytes([0x88, 1 if to_ap else 2, 0, 0]) + _raw(first)
+            + _raw(second) + _raw(first if to_ap else second) + b"\0\0")
+
+
+class WifiTest(unittest.TestCase):
+    def test_nmcli(self):
+        aps = wifi.parse_nmcli(
+            "AA\\:BB\\:CC\\:00\\:00\\:01:Home\\: 5G:5180 MHz:70:WPA2 WPA3\n"
+            "aa\\:bb\\:cc\\:00\\:00\\:02::2437 MHz:35:\n"
+            "garbage\n")
+        self.assertEqual(len(aps), 2)
+        self.assertEqual(
+            (aps[0].bssid, aps[0].ssid, aps[0].freq, aps[0].signal,
+             aps[0].security),
+            (AP1, "Home: 5G", 5180, -50, "WPA2 WPA3"))
+        self.assertEqual((aps[1].bssid, aps[1].ssid, aps[1].security),
+                         (AP2, "", "Open"))
+
+    def test_channels(self):
+        self.assertEqual(
+            [wifi.channel_of(f) for f in (2412, 2484, 5180, 5955)],
+            [1, 14, 36, 1])
+        self.assertEqual(
+            [wifi.band_of(f) for f in (2437, 5500, 6115, 0)],
+            ["2.4 GHz", "5 GHz", "6 GHz", ""])
+        self.assertEqual(wifi.freq_of(6, 2412), 2437)
+        self.assertEqual(wifi.freq_of(36, 5200), 5180)
+        self.assertEqual(wifi.signal_fraction(0), 1.0)
+        self.assertLess(
+            wifi.signal_fraction(-45), wifi.signal_fraction(-80))
+        self.assertIn(2437, wifimon.FREQS)
+        self.assertIn(5180, wifimon.FREQS)
+
+    def test_radiotap(self):
+        frame, freq, signal = wifi.parse_radiotap(
+            _radiotap(b"frame-and-fcs", 5180, -61, flags=0x10))
+        self.assertEqual((frame, freq, signal), (b"frame-and", 5180, -61))
+        # A packet cut short by the capture has no checksum left.
+        frame, _freq, _signal = wifi.parse_radiotap(
+            _radiotap(b"frame", flags=0x10), complete=False)
+        self.assertEqual(frame, b"frame")
+        self.assertIsNone(
+            wifi.parse_radiotap(_radiotap(b"frame", flags=0x40))[0])
+        self.assertIsNone(wifi.parse_radiotap(b"\0\0\xff\xff")[0])
+
+    def test_survey(self):
+        survey = wifi.Survey()
+        # Overheard weakly on the next channel, then on its own.
+        survey.add_packet(_radiotap(
+            _beacon(AP1, b"Home", 6, _element(48, RSN)), 2442, -70))
+        survey.add_packet(_radiotap(
+            _beacon(AP1, b"Home", 6, _element(48, RSN)), 2437, -48))
+        survey.add_packet(_radiotap(
+            _beacon(AP2, b"\0\0\0", 36, privacy=False), 5180, -80))
+        survey.add_packet(_radiotap(_data(AP1, STA1, to_ap=True), 2437, -55))
+        survey.add_packet(_radiotap(_data(STA2, AP1, to_ap=False), 2437))
+        # Multicast from the access point is nobody's.
+        survey.add_packet(_radiotap(
+            _data("01:00:5E:00:00:FB", AP1, to_ap=False)))
+        # A probe request, and a request-to-send to an access point.
+        survey.add_packet(_radiotap(
+            b"\x40\x00\x00\x00" + b"\xff" * 6 + _raw(STA3) + b"\xff" * 6
+            + b"\0\0" + _element(0, b"Cafe"), 2437, -66))
+        survey.add_packet(_radiotap(
+            b"\xb4\x00\x00\x00" + _raw(AP2) + _raw(STA3), 5180, -60))
+        survey.add_packet(b"junk")
+        aps, clients = survey.result()
+        aps = {a.bssid: a for a in aps}
+        clients = {c.mac: c for c in clients}
+        self.assertEqual(
+            (aps[AP1].ssid, aps[AP1].freq, aps[AP1].signal,
+             aps[AP1].security),
+            ("Home", 2437, -48, "WPA2 / WPA3"))
+        self.assertEqual(
+            (aps[AP2].ssid, aps[AP2].freq, aps[AP2].security),
+            ("", 5180, "Open"))
+        self.assertEqual(
+            (clients[STA1].bssid, clients[STA1].signal), (AP1, -55))
+        self.assertEqual(
+            (clients[STA2].bssid, clients[STA2].signal), (AP1, 0))
+        self.assertEqual(
+            (clients[STA3].bssid, clients[STA3].probes, clients[STA3].signal),
+            (AP2, ["Cafe"], -60))
+        self.assertEqual(len(clients), 3)
+
+    def test_pcap_and_trim(self):
+        beacon = _radiotap(_beacon(AP1, b"Home", 6) + bytes(2000))
+        data = _radiotap(_data(AP1, STA1, to_ap=True) + bytes(500))
+        ack = _radiotap(b"\xd4\x00\x00\x00" + _raw(AP1))
+        self.assertIsNone(wifimon.trim(ack))
+        self.assertIsNone(wifimon.trim(b"\0"))
+        stream = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 127)
+        for packet in (beacon, data):
+            kept = wifimon.trim(packet)
+            self.assertLess(len(kept), len(packet))
+            stream += struct.pack(
+                "<IIII", 0, 0, len(kept), len(packet)) + kept
+        reader, survey = wifi.PcapReader(), wifi.Survey()
+        for i in range(0, len(stream), 7):  # arrives in odd pieces
+            for packet, complete in reader.feed(stream[i:i + 7]):
+                self.assertFalse(complete)
+                survey.add_packet(packet, complete)
+        aps, clients = survey.result()
+        self.assertEqual([a.ssid for a in aps], ["Home"])
+        self.assertEqual([c.mac for c in clients], [STA1])
+        with self.assertRaises(wifi.WifiError):
+            wifi.PcapReader().feed(b"x" * 24)
+
+    def test_store(self):
+        store = Store(":memory:")
+        store.merge_scan([Host(ip="192.168.1.7", mac=STA1,
+                               hostname="laptop.lan")], NET, now=10)
+        store.merge_wifi(
+            [wifi.AP(AP1, "Home", 5180, -50, "WPA2")], now=20)
+        (ap,) = store.wifi_devices()
+        self.assertEqual(
+            (ap.display_name, ap.type, ap.online, ap.table, ap.known),
+            ("Home", "router", True, "wifi", True))
+        self.assertEqual(len(store.devices()), 1)
+        gone = store.merge_wifi(
+            [wifi.AP(AP1, "", 0, -60)],
+            [wifi.Client(STA1, AP1, -55), wifi.Client(STA2, "", -80, ["X"]),
+             wifi.Client(AP1)], now=30)
+        self.assertEqual(gone, [])
+        found = {d.mac: d for d in store.wifi_devices()}
+        self.assertEqual(len(found), 3)
+        self.assertEqual((ap.ssid, ap.freq, ap.signal), ("Home", 5180, -60))
+        # The client is the laptop on the LAN, under the same address.
+        self.assertEqual(found[STA1].display_name, "laptop")
+        self.assertEqual(found[STA1].wifi_text, "on Home · -55 dBm")
+        self.assertEqual(store.wifi_for(STA1), found[STA1])
+        self.assertIsNone(store.wifi_for(""))
+        self.assertEqual(found[STA2].wifi_text, "not connected · -80 dBm")
+        # Which makes it, and the access point it uses, "mine".
+        self.assertTrue(found[STA1].mine)
+        self.assertTrue(ap.mine)
+        self.assertFalse(found[STA2].mine)
+        self.assertTrue(store.wifi_shown(found[STA1], True))
+        self.assertFalse(store.wifi_shown(found[STA2], True))
+        self.assertTrue(store.wifi_shown(found[STA2], False))
+        # A scan without client data leaves the clients alone ...
+        found[STA2].custom_name = "Visitor"
+        store.merge_wifi([], now=40)
+        self.assertEqual(len(store.wifi_devices()), 3)
+        self.assertFalse(ap.online)
+        self.assertTrue(found[STA1].online)
+        # ... one with client data replaces them, except named ones.
+        gone = store.merge_wifi([], [], now=50)
+        self.assertEqual(gone, [found[STA1]])
+        self.assertFalse(found[STA2].online)
+        # Access points out of range for a month are forgotten.
+        gone = store.merge_wifi([], now=20 + 40 * 86400)
+        self.assertEqual(gone, [ap])
+        self.assertEqual(store.wifi_devices(), [found[STA2]])
+        self.assertEqual(len(store.devices()), 1)
+
+    def test_mine(self):
+        from lanscan.store import near_mac
+        self.assertTrue(near_mac("AA:BB:CC:00:00:03", ["AA:BB:CC:00:00:01"]))
+        self.assertTrue(near_mac("AE:BB:CC:00:00:01", ["AC:BB:CC:00:00:00"]))
+        self.assertFalse(near_mac("AA:BB:CC:00:01:01", ["AA:BB:CC:00:00:01"]))
+        self.assertFalse(near_mac("AA:BB:CD:00:00:01", ["AA:BB:CC:00:00:01"]))
+        store = Store(":memory:")
+        store.merge_wifi([
+            wifi.AP("AA:BB:CC:00:00:02", "Home"),
+            wifi.AP("AA:BB:CC:77:00:02", "Home"),  # second mesh node
+            wifi.AP("DD:00:00:00:00:01", "Neighbour")],
+            [wifi.Client(STA1, "AA:BB:CC:77:00:02")], now=10)
+        self.assertFalse(any(d.mine for d in store.wifi_devices()))
+        # The router shows up on the LAN, one address below its radio.
+        store.merge_scan(
+            [Host(ip="192.168.1.1", mac="AA:BB:CC:00:00:01")], NET, now=20)
+        mine = {d.mac for d in store.wifi_devices() if d.mine}
+        self.assertEqual(mine, {"AA:BB:CC:00:00:02", "AA:BB:CC:77:00:02"})
+        shown = {d.mac for d in store.wifi_devices()
+                 if store.wifi_shown(d, True)}
+        self.assertEqual(shown, mine | {STA1})  # a guest on my network
+
+    def test_list(self):
+        def dev(kind, mac, **values):
+            return Device(wifi=kind, mac=mac, online=True, **values)
+
+        near = dev("ap", AP1, ssid="Home", signal=-48, freq=5180,
+                   security="WPA2", mine=True)
+        far = dev("ap", AP2, ssid="Home", signal=-70, freq=2437)
+        hidden = dev("ap", "AA:00:00:00:00:09", signal=-80, freq=5500)
+        old = Device(wifi="ap", mac="AA:00:00:00:00:0A", ssid="Gone")
+        laptop = dev("client", STA1, bssid=AP2, signal=-60,
+                     friendly_name="laptop")
+        roaming = dev("client", STA2, signal=-75)
+        grouped = dict(group_wifi(
+            [roaming, laptop, far, hidden, near, old,
+             Device(ip="192.168.1.5")]))
+        self.assertEqual(
+            list(grouped), ["Home", hidden.mac, "Gone", LOOSE])
+        self.assertEqual(grouped["Home"], [near, far, laptop])
+        self.assertEqual(grouped[LOOSE], [roaming])
+        groups = {}
+        for key, members in grouped.items():
+            groups[key] = WifiGroup(key)
+            groups[key].sync(members)
+        home = groups["Home"]
+        self.assertEqual(
+            (home.title, home.signal_text, home.band_text, home.security,
+             home.mine, row_clients(home, None)),
+            ("Home", "-48 dBm", "2.4 + 5 GHz", "WPA2", True, "1"))
+        self.assertEqual(
+            [row_clients(near, home), row_clients(far, home)], ["", "1"])
+        self.assertEqual(
+            [row_name(near), row_name(laptop), row_name(groups[hidden.mac])],
+            ["Access point", "laptop", "Hidden network"])
+        self.assertEqual(groups[hidden.mac].band_text, "5 GHz ch 100")
+        self.assertEqual(groups["Gone"].signal_text, "Out of range")
+        self.assertEqual(groups[LOOSE].title, "Not connected to a network")
+        order = sorted(groups.values(), key=sort_rank)
+        self.assertEqual([g.key for g in order],
+                         ["Home", hidden.mac, "Gone", LOOSE])
+        self.assertLess(sort_rank(far), sort_rank(laptop))
+
+    def test_map(self):
+        def ap(mac, ssid, signal, freq=5180):
+            return Device(wifi="ap", mac=mac, ssid=ssid, signal=signal,
+                          freq=freq, online=True)
+
+        def client(mac, bssid):
+            return Device(wifi="client", mac=mac, bssid=bssid, online=True)
+
+        devices = [
+            ap(AP1, "Home", -70, 2437), ap(AP2, "Home", -50),
+            ap("AA:00:00:00:00:03", "", -80), ap("AA:00:00:00:00:04", "", -85),
+            client(STA1, AP1), client(STA2, AP2), client(STA3, ""),
+            Device(wifi="ap", mac="AA:00:00:00:00:05", ssid="Gone"),
+            Device(ip="192.168.1.5", online=True)]
+        networks, loose = wifi_networks(devices)
+        self.assertEqual(len(networks), 3)  # hidden ones stay apart
+        home = next(n for n in networks if n["key"] == "Home")
+        self.assertEqual(home["ap"].mac, AP2)  # the strongest one
+        self.assertEqual([c.mac for c in home["clients"]], [STA1, STA2])
+        self.assertEqual([c.mac for c in loose], [STA3])
+        placed, dots = wifi_layout(devices, 400, 250)
+        near = next(n for n in placed if n["key"] == "Home")
+        far = next(n for n in placed if n["key"] == "AA:00:00:00:00:04")
+        self.assertLess(math.hypot(near["x"] / 400, near["y"] / 250),
+                        math.hypot(far["x"] / 400, far["y"] / 250))
+        self.assertEqual(len(dots), 1)
+        self.assertEqual([len(orbit_positions(n)) for n in (0, 4, 40)],
+                         [0, 4, 15])
+        self.assertTrue(all(y < 0 for _x, y in orbit_positions(15)))
+
+    def test_device_texts(self):
+        ap = Device(wifi="ap", mac=AP1, freq=5180, signal=-54,
+                    security="WPA2", online=True)
+        self.assertEqual(ap.display_name, "Hidden network")
+        self.assertEqual(ap.summary_text, "5 GHz ch 36 · WPA2 · -54 dBm")
+        self.assertEqual(ap.status_text, "In range")
+        self.assertEqual(ap.service_lines(), [
+            "5 GHz, channel 36", "Security   WPA2", "Signal   -54 dBm"])
+        self.assertTrue(ap.matches("wpa2"))
+        lan = Device(ip="192.168.1.5")
+        self.assertEqual((lan.table, lan.summary_text), ("devices", ""))
+
+
+if __name__ == "__main__":
+    unittest.main()

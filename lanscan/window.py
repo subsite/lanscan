@@ -6,11 +6,13 @@ import time
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
-from . import APP_NAME, netinfo, scanner
+from . import APP_NAME, netinfo, scanner, wifi
 from .detail import DetailPane
 from .device import (
     NOT_SCANNED, TYPE_LABELS, Device, NetworkGroup, ServiceRow, format_time)
 from .mapview import MapView, group_by_network
+from .wifilist import WifiList
+from .wifimap import WifiMapView
 
 # Tighter rows than the Adwaita default, to fit more devices on screen.
 CSS = """
@@ -22,6 +24,15 @@ columnview.compact > listview > row > cell button {
   min-height: 22px;
   padding-top: 0;
   padding-bottom: 0;
+}
+button.pane-handle {
+  min-width: 16px;
+  padding: 0;
+  border-radius: 0;
+  background-color: alpha(currentColor, 0.07);
+}
+button.pane-handle:hover {
+  background-color: alpha(currentColor, 0.16);
 }
 """
 
@@ -51,13 +62,15 @@ class Window(Adw.ApplicationWindow):
         self.current = None  # device shown in the detail pane
         self._local_networks = []
         self._unidentified = []
+        self._show_empty_pane = False
+        self.only_mine = store.get_setting("wifi_only_mine") == "1"
 
         # Devices -> filter -> groups per network -> tree (network,
         # device, service rows) -> sort.
         self._named_networks = []
         self.groups = Gio.ListStore(item_type=NetworkGroup)
         self.items = Gio.ListStore(item_type=Device)
-        for dev in store.devices():
+        for dev in store.devices() + store.wifi_devices():
             self.items.append(dev)
         self.filter = Gtk.CustomFilter.new(self._matches)
         self.filtered = Gtk.FilterListModel(
@@ -78,12 +91,18 @@ class Window(Adw.ApplicationWindow):
                 ("scan-root", lambda *a: self.start_scan(privileged=True)),
                 ("port-scan-root", lambda *a: self.start_port_scan(
                     [self.current], privileged=True)),
+                ("wifi-deep", lambda *a: self.start_wifi_deep()),
                 ("port-scan-all", lambda *a: self.scan_all_ports()),
                 ("port-scan-all-full",
                  lambda *a: self.scan_all_ports(full=True))):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
             self.add_action(action)
+
+        action = Gio.SimpleAction.new_stateful(
+            "wifi-only-mine", None, GLib.Variant.new_boolean(self.only_mine))
+        action.connect("change-state", self._on_only_mine)
+        self.add_action(action)
 
         # Header
         header = Adw.HeaderBar()
@@ -92,12 +111,27 @@ class Window(Adw.ApplicationWindow):
         self.scan_btn.connect("clicked", lambda _b: self.start_scan())
         header.pack_start(self.scan_btn)
         header.pack_start(self._build_network_chooser())
+        # What to look at: the scanned networks or Wi-Fi.
+        scope = Gtk.Box(css_classes=["linked"])
+        lan_btn = Gtk.ToggleButton(
+            label="LAN", active=True,
+            tooltip_text="The devices on the scanned networks")
+        self.wifi_btn = Gtk.ToggleButton(
+            label="Wi-Fi", group=lan_btn,
+            active=store.get_setting("scope") == "wifi",
+            tooltip_text="The Wi-Fi networks in range")
+        scope.append(lan_btn)
+        scope.append(self.wifi_btn)
+        header.pack_start(scope)
         self.spinner = Adw.Spinner(visible=False)
         header.pack_start(self.spinner)
 
         menu = Gio.Menu()
         section = Gio.Menu()
         section.append("Scan as Root", "win.scan-root")
+        section.append(
+            "Deep Wi-Fi Scan (Root, Shows Clients)", "win.wifi-deep")
+        section.append("Show Only My Wi-Fi Networks", "win.wifi-only-mine")
         menu.append_section(None, section)
         section = Gio.Menu()
         section.append("Scan Ports on All Devices", "win.port-scan-all")
@@ -154,21 +188,33 @@ class Window(Adw.ApplicationWindow):
             | GObject.BindingFlags.SYNC_CREATE)
 
         # Views
-        self.view_stack = Adw.ViewStack()
-        self.view_stack.add_titled_with_icon(
-            Gtk.ScrolledWindow(child=self.column_view), "list", "List",
-            "view-list-symbolic")
+        self.view_stack = Gtk.Stack()
+        self.view_stack.add_named(
+            Gtk.ScrolledWindow(child=self.column_view), "list")
         self.map = MapView(self.filtered, self._on_map_pick)
+        self.map.wifi_note = self._wifi_note
         self.map.set_topology(self._topology)
-        self.view_stack.add_titled_with_icon(
-            self.map, "map", "Map", "network-workgroup-symbolic")
-        header.set_title_widget(Adw.ViewSwitcher(
-            stack=self.view_stack, policy=Adw.ViewSwitcherPolicy.WIDE))
-        saved_view = store.get_setting("view")
-        if saved_view in ("list", "map"):
-            self.view_stack.set_visible_child_name(saved_view)
-        self.view_stack.connect("notify::visible-child-name", self._on_view)
-        self._on_view(self.view_stack, None)
+        self.view_stack.add_named(self.map, "map")
+        self.wifi_list = WifiList(self.filtered, self.show_details)
+        self.view_stack.add_named(self.wifi_list, "wifi-list")
+        self.wifi_map = WifiMapView(self.filtered, self._on_map_pick)
+        self.wifi_map.set_adapter(self.wifi_iface)
+        self.view_stack.add_named(self.wifi_map, "wifi-map")
+        # List or map, of whichever of the two is being looked at.
+        views = Gtk.Box(css_classes=["linked"])
+        list_btn = Gtk.ToggleButton(
+            child=Adw.ButtonContent(
+                icon_name="view-list-symbolic", label="List"), active=True)
+        self.map_btn = Gtk.ToggleButton(
+            child=Adw.ButtonContent(
+                icon_name="network-workgroup-symbolic", label="Map"),
+            group=list_btn, active=store.get_setting("view") == "map")
+        views.append(list_btn)
+        views.append(self.map_btn)
+        header.set_title_widget(views)
+        self.wifi_btn.connect("toggled", self._on_view)
+        self.map_btn.connect("toggled", self._on_view)
+        self._on_view()
 
         empty = Adw.StatusPage(
             icon_name="network-workgroup-symbolic", title="No Devices Yet",
@@ -181,12 +227,21 @@ class Window(Adw.ApplicationWindow):
             on_edit=self._device_edited,
             on_scan_ports=lambda dev: self.start_port_scan([dev]),
             on_forget=self._forget,
-            on_close=lambda: self.pane_btn.set_active(False))
+            on_close=lambda: self.pane_btn.set_active(False),
+            wifi_for=lambda dev: store.wifi_for(dev.mac))
+        # A bar along the edge that opens and closes the details pane.
+        self.pane_handle = Gtk.Button(css_classes=["flat", "pane-handle"])
+        self.pane_handle.set_cursor_from_name("pointer")
+        self.pane_handle.connect("clicked", self._on_pane_handle)
+        self.content.set_hexpand(True)
+        main = Gtk.Box()
+        main.append(self.content)
+        main.append(self.pane_handle)
         self.split = Adw.OverlaySplitView(
-            content=self.content, sidebar=self.detail,
+            content=main, sidebar=self.detail,
             sidebar_position=Gtk.PackType.END, show_sidebar=False,
-            min_sidebar_width=330, max_sidebar_width=400,
-            sidebar_width_fraction=0.34)
+            min_sidebar_width=230, max_sidebar_width=280,
+            sidebar_width_fraction=0.24)
 
         self.status = Gtk.Label(
             xalign=0, css_classes=["dim-label", "caption"], margin_start=12,
@@ -204,6 +259,7 @@ class Window(Adw.ApplicationWindow):
         self.column_view.sort_by_column(
             self._ip_column, Gtk.SortType.ASCENDING)
         self._update_map_networks()
+        self._sync_pane()
         self._refresh()
         GLib.timeout_add_seconds(30, self._tick)
         GLib.idle_add(self._startup_scan)
@@ -234,6 +290,25 @@ class Window(Adw.ApplicationWindow):
             placeholder_text="10.0.0.0/24, 192.168.5.0/24", width_chars=28,
             text=self.store.get_setting("extra_targets") or "")
         box.append(self.extra)
+        box.append(Gtk.Label(
+            label="Wi-Fi adapter", xalign=0, margin_top=6,
+            css_classes=["heading"]))
+        self.wifi_iface = self.store.get_setting("wifi_iface") or ""
+        if self.wifi_iface not in wifi.adapters():
+            self.wifi_iface = ""
+        self.wifi_list = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.append(self.wifi_list)
+        box.append(Gtk.Label(
+            xalign=0, wrap=True, max_width_chars=34,
+            css_classes=["caption", "dim-label"],
+            label="With an adapter chosen, Scan also lists the Wi-Fi "
+                  "access points in range (see the Wi-Fi view). "
+                  "It can be an adapter you are not connected with.\n"
+                  "To also see the devices on each network, run "
+                  "Deep Wi-Fi Scan from the main menu: it needs your "
+                  "password and takes the adapter offline for "
+                  f"{wifi.DEEP_SECONDS} seconds."))
 
         popover = Gtk.Popover(child=box)
         popover.connect("show", lambda _p: self._rebuild_network_list())
@@ -265,6 +340,38 @@ class Window(Adw.ApplicationWindow):
             self.net_list.append(Gtk.Label(
                 label="No networks found", xalign=0,
                 css_classes=["dim-label"]))
+        while (child := self.wifi_list.get_first_child()) is not None:
+            self.wifi_list.remove(child)
+        names = wifi.adapters()  # may have changed: USB adapters
+        if self.wifi_iface not in names:
+            self.wifi_iface = ""
+        first = None
+        for name in [""] + names:
+            label = name or "Off"
+            problem = wifi.quick_check(name) if name else None
+            if problem:
+                label += "  ·  " + {
+                    "monitor": "in monitor mode",
+                    "radio": "Wi-Fi is off"}.get(problem.fix, "switched off")
+            check = Gtk.CheckButton(
+                label=label, group=first, active=name == self.wifi_iface,
+                tooltip_text=problem.text if problem else None)
+            first = first or check
+            check.connect("toggled", self._on_wifi_adapter, name)
+            self.wifi_list.append(check)
+        if not names:
+            self.wifi_list.append(Gtk.Label(
+                label="No Wi-Fi adapter found", xalign=0,
+                css_classes=["dim-label"]))
+
+    def _on_wifi_adapter(self, check, name):
+        if not check.get_active():
+            return
+        self.wifi_iface = name
+        self.store.set_setting("wifi_iface", self.wifi_iface)
+        if hasattr(self, "wifi_map"):
+            self.wifi_map.set_adapter(self.wifi_iface)
+        self._networks_changed()
 
     def _on_network_toggled(self, check, cidr):
         if check.get_active():
@@ -282,10 +389,12 @@ class Window(Adw.ApplicationWindow):
             self.net_button.set_label("Invalid network")
             return
         if len(targets) == 1:
-            self.net_button.set_label(str(targets[0]))
+            label = str(targets[0])
         else:
-            self.net_button.set_label(
-                f"{len(targets)} networks" if targets else "No network")
+            label = f"{len(targets)} networks" if targets else ""
+        if self.wifi_iface:
+            label = f"{label} + Wi-Fi" if label else "Wi-Fi"
+        self.net_button.set_label(label or "No network")
 
     def _targets(self):
         """The networks to scan: the ticked ones that are connected, plus
@@ -319,7 +428,8 @@ class Window(Adw.ApplicationWindow):
         network, keeping existing groups (and what is expanded)."""
         devices = [self.filtered.get_item(i)
                    for i in range(self.filtered.get_n_items())]
-        wanted = group_by_network(devices, self._named_networks)
+        wanted = group_by_network(
+            [d for d in devices if not d.wifi], self._named_networks)
         keys = [key for key, _devices in wanted]
         for i in reversed(range(self.groups.get_n_items())):
             if self.groups.get_item(i).key not in keys:
@@ -375,6 +485,7 @@ class Window(Adw.ApplicationWindow):
         button.set_tooltip_text(
             "Collapse all devices" if expand else "Expand all devices")
         self._expand_all(expand)
+        self.wifi_list.expand_all(expand)
 
     def _expand_all(self, expand):
         for i in range(self.groups.get_n_items()):
@@ -466,6 +577,9 @@ class Window(Adw.ApplicationWindow):
             box.append(Gtk.Image())
             box.append(Gtk.Label(
                 xalign=0, ellipsize=Pango.EllipsizeMode.END, hexpand=True))
+            box.append(Gtk.Image(
+                icon_name="network-wireless-symbolic", pixel_size=14,
+                css_classes=["dim-label"]))
             box.append(Gtk.Label(
                 label="NEW", css_classes=["caption-heading", "warning"]))
             scan = Gtk.Button(
@@ -492,14 +606,15 @@ class Window(Adw.ApplicationWindow):
             box = expander.get_child()
             image = box.get_first_child()
             name = image.get_next_sibling()
-            badge = name.get_next_sibling()
+            on_wifi = name.get_next_sibling()
+            badge = on_wifi.get_next_sibling()
             scan = badge.get_next_sibling()
             browse = scan.get_next_sibling()
             expander.url = getattr(service, "url", "")
             browse.set_visible(bool(expander.url))
             browse.set_label(expander.url)
             if isinstance(service, NetworkGroup):
-                for hidden in (image, badge, scan):
+                for hidden in (image, on_wifi, badge, scan):
                     hidden.set_visible(False)
                 name.set_hexpand(True)
                 name.set_text(service.title)
@@ -512,6 +627,9 @@ class Window(Adw.ApplicationWindow):
             scan.set_sensitive(dev.online)
             name.set_hexpand(is_device)
             badge.set_visible(is_device and not dev.known)
+            note = self._wifi_note(dev) if is_device else ""
+            on_wifi.set_visible(bool(note))
+            on_wifi.set_tooltip_text(note or None)
             if is_device:
                 image.set_from_icon_name(dev.icon_name)
                 image.set_tooltip_text(TYPE_LABELS[dev.type])
@@ -540,8 +658,8 @@ class Window(Adw.ApplicationWindow):
             "IP address", label, text(lambda d: d.ip),
             key=lambda d: d.ip_sort_key())
         self._column(
-            "Services", label, text(lambda d: d.top_services()),
-            key=lambda d: d.top_services())
+            "Services", label, text(lambda d: d.summary_text),
+            key=lambda d: d.summary_text)
         self._column(
             "MAC address", label, text(lambda d: d.mac), key=lambda d: d.mac)
         self._column(
@@ -560,17 +678,37 @@ class Window(Adw.ApplicationWindow):
     # ---- helpers ------------------------------------------------------
 
     def _matches(self, dev, *_):
+        if not self.store.wifi_shown(dev, self.only_mine):
+            return False
         return not self.search_text or dev.matches(self.search_text)
+
+    def _on_only_mine(self, action, value):
+        action.set_state(value)
+        self.only_mine = value.get_boolean()
+        self.store.set_setting("wifi_only_mine", int(self.only_mine))
+        self._refresh()
+
+    def _wifi_note(self, dev):
+        """'On Wi-Fi: ...' for a network device a Wi-Fi scan also saw."""
+        seen = None if dev.wifi else self.store.wifi_for(dev.mac)
+        if seen is None or seen.wifi != "client":
+            return ""
+        return f"On Wi-Fi: {seen.wifi_text.removeprefix('on ')}"
 
     def _on_search(self, entry):
         self.search_text = entry.get_text().strip()
         self._refresh()
 
-    def _on_view(self, stack, _pspec):
-        name = stack.get_visible_child_name()
-        self.store.set_setting("view", name)
-        self.expand_btn.set_visible(name == "list")
-        self.map_mode.set_visible(name == "map")
+    def _on_view(self, *_args):
+        """Show the list or map of the LAN or of Wi-Fi."""
+        wifi_scope, as_map = self.wifi_btn.get_active(), (
+            self.map_btn.get_active())
+        self.store.set_setting("scope", "wifi" if wifi_scope else "lan")
+        self.store.set_setting("view", "map" if as_map else "list")
+        self.view_stack.set_visible_child_name(
+            ("wifi-" if wifi_scope else "") + ("map" if as_map else "list"))
+        self.expand_btn.set_visible(not as_map)
+        self.map_mode.set_visible(as_map and not wifi_scope)
 
     def _on_map_mode(self, button):
         self._topology = button.get_active()
@@ -585,20 +723,37 @@ class Window(Adw.ApplicationWindow):
         self.detail.set_device(dev)
         self._sync_pane()
         self.map.set_current(dev)
+        self.wifi_map.set_current(dev)
 
     def close_details(self):
         self.current = None
+        self.detail.set_device(None)
         self._sync_pane()
         self.map.set_current(None)
+        self.wifi_map.set_current(None)
 
     def _sync_pane(self):
-        """The pane shows the picked device, unless it is switched off."""
-        self.split.set_show_sidebar(
-            self.pane_btn.get_active() and self.current is not None)
+        """The pane shows the picked device, unless it is switched off.
+        Opened from the bar on the edge it also shows without one."""
+        shown = self.pane_btn.get_active() and (
+            self.current is not None or self._show_empty_pane)
+        self.split.set_show_sidebar(shown)
+        self.pane_handle.set_icon_name(
+            "pan-end-symbolic" if shown else "pan-start-symbolic")
+        self.pane_handle.set_tooltip_text(
+            "Hide the details pane" if shown else "Show the details pane")
+
+    def _on_pane_handle(self, _button):
+        shown = self.split.get_show_sidebar()
+        self.pane_btn.set_active(not shown)
+        self._show_empty_pane = not shown
+        self._sync_pane()
 
     def _on_pane_toggled(self, button):
         self.store.set_setting(
             "details_pane", "1" if button.get_active() else "0")
+        # Switched on by hand, it also opens without a device picked.
+        self._show_empty_pane = button.get_active()
         self._sync_pane()
 
     def _on_map_pick(self, dev):
@@ -640,7 +795,7 @@ class Window(Adw.ApplicationWindow):
 
     def _tick(self):
         # Keep relative times ("5 min ago") current.
-        for dev in self.store.devices():
+        for dev in list(self.items):
             dev.notify_changed()
         self._update_status()
         return True
@@ -652,6 +807,9 @@ class Window(Adw.ApplicationWindow):
         parts = [f"{len(devices)} devices", f"{online} online"]
         if new:
             parts.append(f"{new} new")
+        in_range = sum(d.online for d in self.store.wifi_devices())
+        if in_range:
+            parts.append(f"{in_range} on Wi-Fi")
         if self.scanning:
             parts.append("scanning…")
         elif self.last_scan:
@@ -667,9 +825,12 @@ class Window(Adw.ApplicationWindow):
             sorter.changed(Gtk.SorterChange.DIFFERENT)
         if self.expand_btn.get_active():
             self._expand_all(True)  # also covers rows that just appeared
+            self.wifi_list.expand_all(True)
         self.content.set_visible_child_name(
             "views" if self.items.get_n_items() else "empty")
         self.map.refresh()
+        self.wifi_list.refresh()
+        self.wifi_map.refresh()
         self._update_status()
         self._update_banner()
 
@@ -700,13 +861,14 @@ class Window(Adw.ApplicationWindow):
             return False
         ips = [d.ip for d in self.store.devices()
                if scanner.inside(d.ip, networks)]
-        if ips:
-            self.start_scan(ips=ips)
+        if ips or self.wifi_iface:
+            self.start_scan(ips=ips, quiet=True)
         return False
 
-    def start_scan(self, privileged=False, ips=None):
-        """Scan the chosen networks. With `ips`, only probe those
-        addresses and do not announce the result."""
+    def start_scan(self, privileged=False, ips=None, quiet=False):
+        """Scan the chosen networks, and for Wi-Fi networks if an
+        adapter is chosen. A quiet scan only probes the addresses in
+        `ips` and does not announce the result."""
         if self.scanning:
             return
         self.detected = netinfo.networks()
@@ -715,22 +877,36 @@ class Window(Adw.ApplicationWindow):
         except scanner.ScanError as e:
             self._toast(str(e))
             return
-        if not networks:
-            self._toast("Choose a network to scan first")
+        iface = self.wifi_iface
+        lan = bool(networks) and (bool(ips) or not quiet)
+        if not lan and not iface:
+            if not quiet:
+                self._toast("Choose a network to scan first")
             return
         self._networks_changed()
         self._set_scanning(True)
 
         def work():
-            try:
-                hosts = scanner.discover(networks, privileged, ips)
-            except scanner.ScanError as e:
-                GLib.idle_add(self._scan_failed, str(e))
-            except Exception as e:  # never leave the UI stuck on a spinner
-                GLib.idle_add(self._scan_failed, f"Scan failed: {e}")
-            else:
-                GLib.idle_add(
-                    self._scan_done, hosts, networks, bool(ips))
+            hosts, aps, errors = None, None, []
+            if lan:
+                try:
+                    hosts = scanner.discover(networks, privileged, ips)
+                except scanner.ScanError as e:
+                    errors.append(str(e))
+                except Exception as e:  # never leave the UI on a spinner
+                    errors.append(f"Scan failed: {e}")
+            problem = None
+            if iface:
+                try:
+                    problem = wifi.diagnose(iface)
+                    if problem is None:
+                        aps = wifi.quick_scan(iface)
+                except Exception as e:
+                    errors.append(str(e) if isinstance(e, wifi.WifiError)
+                                  else f"Wi-Fi scan failed: {e}")
+            GLib.idle_add(
+                self._scan_done, hosts, networks, aps, errors, quiet,
+                problem)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -739,7 +915,8 @@ class Window(Adw.ApplicationWindow):
         self.scan_btn.set_sensitive(not scanning)
         self.net_button.set_sensitive(not scanning)
         self.spinner.set_visible(scanning)
-        self.lookup_action("scan-root").set_enabled(not scanning)
+        for name in ("scan-root", "wifi-deep"):
+            self.lookup_action(name).set_enabled(not scanning)
         self._update_status()
         self._update_banner()
 
@@ -747,26 +924,147 @@ class Window(Adw.ApplicationWindow):
         self._set_scanning(False)
         self._toast(message)
 
-    def _scan_done(self, hosts, networks, quiet=False):
-        known_ids = {d.id for d in self.items}
-        # Only networks with link-layer addresses: a root scan cannot
-        # find MAC addresses on a VPN such as WireGuard.
-        self._local_networks = [
-            i.network for i in netinfo.interfaces() if i.mac]
-        self._update_map_networks()
-        new = self.store.merge_scan(hosts, networks)
-        for dev in self.store.devices():
-            if dev.id not in known_ids:
-                self.items.append(dev)
+    def _scan_done(self, hosts, networks, aps, errors, quiet=False,
+                   problem=None):
+        new = []
+        if hosts is not None:
+            known = set(self.items)
+            # Only networks with link-layer addresses: a root scan
+            # cannot find MAC addresses on a VPN such as WireGuard.
+            self._local_networks = [
+                i.network for i in netinfo.interfaces() if i.mac]
+            self._update_map_networks()
+            new = self.store.merge_scan(hosts, networks)
+            for dev in self.store.devices():
+                if dev not in known:
+                    self.items.append(dev)
+        if aps is not None:
+            self._merge_wifi(aps)
         self.last_scan = time.time()
         self._set_scanning(False)
         self._refresh()
         if quiet:
             return
-        message = f"{len(hosts)} devices online"
-        if new:
-            message += f", {len(new)} new"
-        self._toast(message)
+        for error in errors:
+            self._toast(error)
+        if problem is not None:
+            self._wifi_problem(self.wifi_iface, problem)
+        parts = []
+        if hosts is not None:
+            parts.append(f"{len(hosts)} devices online")
+            if new:
+                parts.append(f"{len(new)} new")
+        if aps is not None:
+            parts.append(f"{len(aps)} Wi-Fi access points")
+        if parts:
+            self._toast(", ".join(parts))
+
+    # ---- Wi-Fi ----------------------------------------------------------
+
+    def _merge_wifi(self, aps, clients=None):
+        gone = self.store.merge_wifi(aps, clients, scanner.vendors)
+        for dev in gone:
+            if dev is self.current:
+                self.close_details()
+            found, position = self.items.find(dev)
+            if found:
+                self.items.remove(position)
+        shown = set(self.items)
+        for dev in self.store.wifi_devices():
+            if dev not in shown:
+                self.items.append(dev)
+
+    def _wifi_problem(self, iface, problem):
+        """Explain why the adapter cannot scan, and offer to fix it."""
+        body = problem.text
+        if problem.fix:
+            body += "\n\nLAN Scan can fix this: " + problem.remedy
+        else:
+            body += ("\n\nYou can pick another adapter, or Off, in the "
+                     "network menu next to Scan.")
+        dialog = Adw.AlertDialog(heading="Wi-Fi Scan Not Possible", body=body)
+        dialog.add_response("close", "Close")
+        if problem.fix:
+            dialog.add_response("fix", "Fix and Scan")
+            dialog.set_response_appearance(
+                "fix", Adw.ResponseAppearance.SUGGESTED)
+            dialog.connect("response", lambda _d, response: (
+                response == "fix" and self._fix_wifi(iface, problem.fix)))
+        dialog.present(self)
+
+    def _fix_wifi(self, iface, kind):
+        if self.scanning:
+            return
+        self._set_scanning(True)
+
+        def work():
+            try:
+                wifi.fix(iface, kind)
+                time.sleep(2)  # NetworkManager needs a moment
+                problem = wifi.diagnose(iface)
+            except Exception as e:
+                GLib.idle_add(self._scan_failed, str(e))
+                return
+            GLib.idle_add(done, problem)
+
+        def done(problem):
+            self._set_scanning(False)
+            if problem is None:
+                self.start_scan()
+            else:
+                self._toast(f"That did not help: {problem.text}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def start_wifi_deep(self):
+        """Listen in monitor mode, after asking if that cuts a
+        connection."""
+        if self.scanning:
+            return
+        iface = self.wifi_iface
+        if not iface:
+            self._toast("Choose a Wi-Fi adapter in the network menu first")
+            return
+        if not any(i.name == iface for i in netinfo.interfaces()):
+            self._run_wifi_deep(iface)
+            return
+        dialog = Adw.AlertDialog(
+            heading=f"Disconnect {iface}?",
+            body=f"{iface} is connected to a network. The deep scan takes "
+                 f"it offline for about {wifi.DEEP_SECONDS} seconds.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("scan", "Scan")
+        dialog.set_response_appearance(
+            "scan", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.connect("response", lambda _d, response: (
+            response == "scan" and self._run_wifi_deep(iface)))
+        dialog.present(self)
+
+    def _run_wifi_deep(self, iface):
+        if self.scanning:
+            return
+        self._set_scanning(True)
+        self._toast(
+            f"Listening on {iface} for {wifi.DEEP_SECONDS} seconds…")
+
+        def work():
+            try:
+                aps, clients = wifi.deep_scan(iface)
+            except Exception as e:
+                GLib.idle_add(self._scan_failed, str(e) if isinstance(
+                    e, wifi.WifiError) else f"Wi-Fi scan failed: {e}")
+            else:
+                GLib.idle_add(self._wifi_deep_done, aps, clients)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _wifi_deep_done(self, aps, clients):
+        self._merge_wifi(aps, clients)
+        self.last_scan = time.time()
+        self._set_scanning(False)
+        self._refresh()
+        self._toast(f"{len(aps)} Wi-Fi access points, "
+                    f"{len(clients)} client devices")
 
     def scan_all_ports(self, full=False):
         """Port scan every online device (without root)."""
@@ -781,8 +1079,8 @@ class Window(Adw.ApplicationWindow):
             sorted(devices, key=lambda d: d.ip_sort_key()), full=full)
 
     def start_port_scan(self, devices, privileged=False, full=False):
-        devices = [d for d in devices
-                   if d is not None and d.online and not d.scanning]
+        devices = [d for d in devices if d is not None and d.online
+                   and not d.scanning and not d.wifi]
         if not devices:
             return
         for dev in devices:
