@@ -21,7 +21,7 @@ _BANDS = {"2.4 GHz": (0.11, 0.60, 0.60), "5 GHz": _ONLINE,
           "6 GHz": _GATEWAY}
 _CLIENT = (0.47, 0.56, 0.70)
 EMPTY = ("No Wi-Fi networks in range yet.\nChoose a Wi-Fi adapter in the "
-         "network menu next to Scan, then press Scan.")
+         "adapter menu next to Scan, then press Scan.")
 
 
 def _strength(dev):

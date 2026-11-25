@@ -50,16 +50,15 @@ sent towards a few of its hosts: the hub in between, if any, answers.
 
 ## Wi-Fi
 
-Pick a Wi-Fi adapter at the bottom of the network menu (it is off by
-default). Every Scan then also asks NetworkManager for the access
-points in range: name, band, channel, security and signal.
-
 The LAN | Wi-Fi switch in the header picks what the list and the map
-show. The Wi-Fi list has one row per network, with its access points
+show, and what Scan scans. On the Wi-Fi side, pick an adapter in the
+menu next to Scan (it shows what each adapter is); Scan then asks
+NetworkManager for the access points in range: name, band, channel,
+security and signal. The Wi-Fi list has one row per network, with its access points
 and client devices folded underneath; access points with the same
 name count as one network, on the map too.
 
-"Deep Wi-Fi Scan" in the main menu needs root and `iw`. It switches
+"Deep Scan", next to Scan on the Wi-Fi side, needs root and `iw`. It switches
 the adapter to monitor mode for 30 seconds, hops through the 2.4, 5
 and 6 GHz channels and reads the headers of the frames in the air.
 That shows which devices talk to which access point, their signal
@@ -138,6 +137,9 @@ a checkout, you can install it yourself:
 
     sudo cp data/io.github.subsite.Lanscan.policy \
       /usr/share/polkit-1/actions/
+
+Opening About asks GitHub for the latest release, to say whether a
+newer version exists; nothing else is sent.
 
 The MAC vendor list is downloaded from wireshark.org on first start and
 refreshed monthly (cached in `~/.cache/lanscan/manuf`). Only the public

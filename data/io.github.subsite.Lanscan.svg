@@ -1,29 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <defs>
-    <radialGradient id="bg" cx="50%" cy="45%" r="60%">
-      <stop offset="0" stop-color="#2b3a55"/>
-      <stop offset="1" stop-color="#151a26"/>
-    </radialGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d1238"/>
+      <stop offset="1" stop-color="#090514"/>
+    </linearGradient>
   </defs>
-  <circle cx="64" cy="64" r="58" fill="url(#bg)"/>
-  <g fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="1.5" stroke-dasharray="2 5">
-    <circle cx="64" cy="64" r="22"/>
-    <circle cx="64" cy="64" r="36"/>
-    <circle cx="64" cy="64" r="50"/>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#bg)"/>
+  <rect x="9" y="9" width="110" height="110" rx="27" fill="none" stroke="#00e5ff" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M68 60 31 40M68 60 88 27M68 60 104 65M68 60 84 100M68 60 35 94" fill="none" stroke="#00e5ff" stroke-opacity="0.8" stroke-width="4" stroke-linecap="round"/>
+  <g fill="#00e5ff">
+    <circle cx="31" cy="40" r="9"/>
+    <circle cx="88" cy="27" r="7"/>
+    <circle cx="104" cy="65" r="10"/>
+    <circle cx="84" cy="100" r="8"/>
+    <circle cx="35" cy="94" r="11"/>
   </g>
-  <g fill="none" stroke-width="2.5" stroke-linecap="round">
-    <path d="M64 64 Q52 44 34 36" stroke="#62a0ea"/>
-    <path d="M64 64 Q84 52 96 34" stroke="#62a0ea"/>
-    <path d="M64 64 Q80 78 98 84" stroke="#c061cb"/>
-    <path d="M64 64 Q56 84 40 96" stroke="#62a0ea"/>
-    <path d="M64 64 Q44 66 22 70" stroke="#9a9996" stroke-dasharray="3 4"/>
-  </g>
-  <circle cx="34" cy="36" r="9" fill="#3584e4"/>
-  <circle cx="96" cy="34" r="9" fill="#3584e4"/>
-  <circle cx="98" cy="84" r="9" fill="#9141ac"/>
-  <circle cx="40" cy="96" r="9" fill="#3584e4"/>
-  <circle cx="22" cy="70" r="7" fill="#77767b"/>
-  <circle cx="64" cy="64" r="13" fill="#26a269"/>
-  <circle cx="64" cy="64" r="13" fill="none" stroke="#8ff0a4" stroke-opacity="0.6" stroke-width="2"/>
+  <circle cx="68" cy="60" r="16" fill="#ff2bd6"/>
+  <circle cx="68" cy="60" r="7.5" fill="#090514"/>
 </svg>

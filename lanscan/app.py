@@ -5,7 +5,8 @@ import threading
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from . import APP_ID, APP_NAME, AUTHOR, WEBSITE, __version__, scanner
+from . import (
+    APP_ID, APP_NAME, AUTHOR, WEBSITE, __version__, scanner, updates)
 from .store import Store
 from .window import Window
 
@@ -52,15 +53,36 @@ class Application(Adw.Application):
                 window.refresh()
 
     def _about(self, *_args):
-        Adw.AboutDialog(
+        comments = ("A graphical overview of the devices on your network. "
+                    "Scanning is done by nmap.")
+        dialog = Adw.AboutDialog(
             application_name=APP_NAME, version=__version__,
-            application_icon="network-workgroup-symbolic",
-            comments="A graphical overview of the devices on your network. "
-                     "Scanning is done by nmap.",
+            application_icon=APP_ID,
+            comments=comments + "\n\nChecking for a new version…",
             developer_name=AUTHOR, website=WEBSITE,
             issue_url=WEBSITE + "/issues", copyright=f"© 2026 {AUTHOR}",
-            license_type=Gtk.License.GPL_3_0,
-        ).present(self.get_active_window())
+            license_type=Gtk.License.GPL_3_0)
+        dialog.present(self.get_active_window())
+
+        def check():
+            url = ""
+            try:
+                latest, page = updates.latest_release()
+            except Exception:
+                note = "Could not check for a new version."
+            else:
+                if updates.is_newer(latest, __version__):
+                    note, url = f"Version {latest} is available.", page
+                else:
+                    note = "This is the latest version."
+            GLib.idle_add(done, note, url, latest if url else "")
+
+        def done(note, url, latest):
+            dialog.set_comments(f"{comments}\n\n{note}")
+            if url:
+                dialog.add_link(f"Get Version {latest}", url)
+
+        threading.Thread(target=check, daemon=True).start()
 
 
 def main():

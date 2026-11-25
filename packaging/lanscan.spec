@@ -29,6 +29,7 @@ Recommends:     avahi-tools
 # Wi-Fi scanning
 Recommends:     NetworkManager
 Recommends:     iw
+Recommends:     hwdata
 
 %description
 LAN Scan shows every device on the networks this computer is connected

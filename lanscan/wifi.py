@@ -89,6 +89,81 @@ def adapters(root="/sys/class/net"):
             if os.path.isdir(os.path.join(root, n, "phy80211"))]
 
 
+HWDATA = "/usr/share/hwdata"
+
+
+def lookup_ids(path, vendor, device):
+    """Names of a vendor and one of its devices in a pci.ids / usb.ids
+    file: ('TP-Link', 'Archer T2U PLUS [RTL8821AU]'), '' if unknown."""
+    names, inside = ["", ""], False
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("#") or not line.strip():
+                    continue
+                if not line.startswith("\t"):
+                    if inside:
+                        break  # past this vendor's devices
+                    if line[:4].lower() == vendor:
+                        names[0], inside = line[4:].strip(), True
+                elif inside and not line.startswith("\t\t") and (
+                        line[1:5].lower() == device):
+                    names[1] = line[5:].strip()
+                    break
+    except OSError:
+        pass
+    return tuple(names)
+
+
+def adapter_info(iface, root="/sys/class/net", hwdata=HWDATA):
+    """What an adapter is, for choosing between them: a dict with
+    'model', 'bus' ('USB', 'built in'), 'driver' and 'connected'."""
+    base = os.path.join(root, iface)
+    device = os.path.join(base, "device")
+
+    def link(name):
+        try:
+            return os.path.basename(os.readlink(os.path.join(device, name)))
+        except OSError:
+            return ""
+
+    def hex4(path):
+        return _read(path).lower().removeprefix("0x")[-4:]
+
+    bus = link("subsystem")
+    if bus == "usb":  # the ids are on the device above the interface
+        vendor, model = lookup_ids(
+            os.path.join(hwdata, "usb.ids"),
+            hex4(os.path.join(device, "..", "idVendor")),
+            hex4(os.path.join(device, "..", "idProduct")))
+        if not model:
+            model = _read(os.path.join(device, "..", "product"))
+            vendor = vendor or _read(os.path.join(device, "..", "manufacturer"))
+    else:
+        vendor, model = lookup_ids(
+            os.path.join(hwdata, "pci.ids"),
+            hex4(os.path.join(device, "vendor")),
+            hex4(os.path.join(device, "device")))
+    # "Realtek Semiconductor Co., Ltd." -> "Realtek"
+    vendor = vendor.split(",")[0].split(" Semiconductor")[0].split(
+        " Corp")[0].strip()
+    if vendor and vendor.lower() not in model.lower():
+        model = f"{vendor} {model}".strip()
+    return {
+        "model": model,
+        "bus": {"usb": "USB", "pci": "built in"}.get(bus, bus),
+        "driver": link("driver"),
+        "connected": _read(os.path.join(base, "operstate")) == "up",
+    }
+
+
+def adapter_summary(info):
+    """'TP-Link Archer T2U PLUS [RTL8821AU] · USB · connected'"""
+    return " · ".join(p for p in (
+        info["model"] or info["driver"], info["bus"],
+        "connected" if info["connected"] else "") if p)
+
+
 # ---- quick scan (NetworkManager) ---------------------------------------
 
 def _split_terse(line):
