@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.subsite.Lanscan</id>
+  <name>LAN Scan</name>
+  <summary>See the devices on your networks</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <developer id="io.github.subsite">
+    <name>subsite</name>
+  </developer>
+  <description>
+    <p>
+      LAN Scan shows every device on the networks this computer is
+      connected to, in a list grouped by network and on a map where
+      the distance to a device shows its ping time.
+    </p>
+    <ul>
+      <li>Finds devices with nmap, ping, mDNS and UPnP</li>
+      <li>Identifies vendor, model, type and operating system</li>
+      <li>Port scans with links to web interfaces</li>
+      <li>Remembers devices and flags new ones</li>
+      <li>Handles several networks: LAN, WireGuard, Docker</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.subsite.Lanscan.desktop</launchable>
+  <url type="homepage">https://github.com/subsite/lanscan</url>
+  <url type="bugtracker">https://github.com/subsite/lanscan/issues</url>
+  <url type="vcs-browser">https://github.com/subsite/lanscan</url>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>lanscan</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-11-25"/>
+  </releases>
+</component>

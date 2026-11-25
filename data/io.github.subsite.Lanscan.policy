@@ -2,11 +2,11 @@
 <!DOCTYPE policyconfig PUBLIC
  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
-<!-- Optional. Lets polkit remember the password for a few minutes, so
+<!-- Lets polkit remember the password for a few minutes, so
      each scan does not prompt again. Note that it applies to every
      "pkexec nmap" run from your session, not only those lanscan starts. -->
 <policyconfig>
-  <action id="io.github.lanscan.nmap">
+  <action id="io.github.subsite.Lanscan.nmap">
     <description>Scan the network with nmap</description>
     <message>Authentication is required to scan the network</message>
     <defaults>

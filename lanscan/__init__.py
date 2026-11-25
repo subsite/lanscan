@@ -8,5 +8,5 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Graphene", "1.0")
 
 __version__ = "0.1.0"
-APP_ID = "io.github.lanscan.Lanscan"
+APP_ID = "io.github.subsite.Lanscan"
 APP_NAME = "LAN Scan"
