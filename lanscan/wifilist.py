@@ -1,7 +1,7 @@
 """The Wi-Fi list: one row per network, with its access points and
 client devices folded underneath."""
 
-from gi.repository import Adw, Gio, Gtk, Pango
+from gi.repository import Gio, Gtk, Pango
 
 from .device import Device, NetworkGroup, format_time
 from .wifi import band_of
@@ -160,7 +160,7 @@ def sort_rank(item):
     return (item.wifi != "ap", -_strength(item))
 
 
-class WifiList(Gtk.Stack):
+class WifiList(Gtk.ScrolledWindow):
     __gtype_name__ = "LanscanWifiList"
 
     def __init__(self, model, on_pick):
@@ -183,12 +183,7 @@ class WifiList(Gtk.Stack):
         self.view.set_model(Gtk.NoSelection(model=sorted_model))
         self.view.connect("activate", self._on_activate)
         self._build_columns()
-        self.add_named(Adw.StatusPage(
-            icon_name="network-wireless-symbolic",
-            title="No Wi-Fi Networks Yet",
-            description="Choose a Wi-Fi adapter in the network menu next "
-                        "to Scan, then press Scan."), "empty")
-        self.add_named(Gtk.ScrolledWindow(child=self.view), "list")
+        self.set_child(self.view)
 
     def refresh(self):
         """Regroup the devices, keeping the groups (and what is folded
@@ -216,7 +211,6 @@ class WifiList(Gtk.Stack):
         sorter = self.view.get_sorter()
         if sorter is not None:
             sorter.changed(Gtk.SorterChange.DIFFERENT)
-        self.set_visible_child_name("list" if wanted else "empty")
 
     def expand_all(self, expand):
         for i in range(self.groups.get_n_items()):

@@ -200,6 +200,14 @@ class Window(Adw.ApplicationWindow):
         self.wifi_map = WifiMapView(self.filtered, self._on_map_pick)
         self.wifi_map.set_adapter(self.wifi_iface)
         self.view_stack.add_named(self.wifi_map, "wifi-map")
+        # Shown instead of an empty Wi-Fi list or map: what to do.
+        self.wifi_help = Adw.StatusPage(
+            icon_name="network-wireless-symbolic")
+        self.wifi_help_btn = Gtk.Button(
+            halign=Gtk.Align.CENTER, css_classes=["pill", "suggested-action"])
+        self.wifi_help_btn.connect("clicked", self._on_wifi_help)
+        self.wifi_help.set_child(self.wifi_help_btn)
+        self.view_stack.add_named(self.wifi_help, "wifi-help")
         # List or map, of whichever of the two is being looked at.
         views = Gtk.Box(css_classes=["linked"])
         list_btn = Gtk.ToggleButton(
@@ -214,7 +222,6 @@ class Window(Adw.ApplicationWindow):
         header.set_title_widget(views)
         self.wifi_btn.connect("toggled", self._on_view)
         self.map_btn.connect("toggled", self._on_view)
-        self._on_view()
 
         empty = Adw.StatusPage(
             icon_name="network-workgroup-symbolic", title="No Devices Yet",
@@ -222,6 +229,7 @@ class Window(Adw.ApplicationWindow):
         self.content = Gtk.Stack()
         self.content.add_named(empty, "empty")
         self.content.add_named(self.view_stack, "views")
+        self._on_view()
 
         self.detail = DetailPane(
             on_edit=self._device_edited,
@@ -371,6 +379,7 @@ class Window(Adw.ApplicationWindow):
         self.store.set_setting("wifi_iface", self.wifi_iface)
         if hasattr(self, "wifi_map"):
             self.wifi_map.set_adapter(self.wifi_iface)
+            self._show_view()
         self._networks_changed()
 
     def _on_network_toggled(self, check, cidr):
@@ -705,10 +714,74 @@ class Window(Adw.ApplicationWindow):
             self.map_btn.get_active())
         self.store.set_setting("scope", "wifi" if wifi_scope else "lan")
         self.store.set_setting("view", "map" if as_map else "list")
-        self.view_stack.set_visible_child_name(
-            ("wifi-" if wifi_scope else "") + ("map" if as_map else "list"))
         self.expand_btn.set_visible(not as_map)
         self.map_mode.set_visible(as_map and not wifi_scope)
+        self._show_view()
+
+    def _show_view(self):
+        """Put the chosen view on screen, or instructions in its place
+        when there is nothing to show yet."""
+        wifi_scope, as_map = self.wifi_btn.get_active(), (
+            self.map_btn.get_active())
+        name = ("wifi-" if wifi_scope else "") + (
+            "map" if as_map else "list")
+        if wifi_scope and self._update_wifi_help(as_map):
+            name = "wifi-help"
+        if name == "wifi-list" and (
+                self.view_stack.get_visible_child_name() != name):
+            self.wifi_list.refresh()  # lay the rows out afresh
+        self.view_stack.set_visible_child_name(name)
+        self.content.set_visible_child_name(
+            "views" if wifi_scope or self.items.get_n_items() else "empty")
+
+    def _update_wifi_help(self, as_map):
+        """Fill in the Wi-Fi instructions. Returns False when the Wi-Fi
+        list or map has something to show instead."""
+        found = [d for d in self.items if d.wifi]
+        shown = [d for d in self.filtered if d.wifi]
+        if any(d.online for d in shown) if as_map else shown:
+            return False
+        deep = ("To also see the devices on each network, run Deep "
+                "Wi-Fi Scan from the main menu afterwards.")
+        button = "Scan"
+        if self.scanning:
+            title, text, button = "Scanning…", "", ""
+        elif found and not shown:
+            title = "None of These Networks Are Yours"
+            text = (f"{len(found)} Wi-Fi networks and devices are hidden. "
+                    "Switch off Show Only My Wi-Fi Networks in the main "
+                    "menu to see them all.")
+            button = "Show All"
+        elif not self.wifi_iface:
+            title = "Choose a Wi-Fi Adapter"
+            text = ("Wi-Fi scanning is off. Choose an adapter under "
+                    "Wi-Fi adapter in the network menu next to Scan, then "
+                    "press Scan to list the access points in range.\n\n"
+                    + deep)
+            button = "Choose Adapter"
+        elif found:
+            title = "No Wi-Fi Networks in Range"
+            text = (f"Press Scan to look again with {self.wifi_iface}. The "
+                    "list shows the networks seen before.")
+        else:
+            title = "No Wi-Fi Scan Yet"
+            text = ("Press Scan to list the access points in range of "
+                    f"{self.wifi_iface}.\n\n" + deep)
+        self.wifi_help.set_title(title)
+        self.wifi_help.set_description(text)
+        self.wifi_help_btn.set_label(button)
+        self.wifi_help_btn.set_visible(bool(button))
+        return True
+
+    def _on_wifi_help(self, button):
+        label = button.get_label()
+        if label == "Choose Adapter":
+            self.net_button.popup()
+        elif label == "Show All":
+            self.lookup_action("wifi-only-mine").change_state(
+                GLib.Variant.new_boolean(False))
+        else:
+            self.start_scan()
 
     def _on_map_mode(self, button):
         self._topology = button.get_active()
@@ -826,8 +899,7 @@ class Window(Adw.ApplicationWindow):
         if self.expand_btn.get_active():
             self._expand_all(True)  # also covers rows that just appeared
             self.wifi_list.expand_all(True)
-        self.content.set_visible_child_name(
-            "views" if self.items.get_n_items() else "empty")
+        self._show_view()
         self.map.refresh()
         self.wifi_list.refresh()
         self.wifi_map.refresh()
@@ -919,6 +991,8 @@ class Window(Adw.ApplicationWindow):
             self.lookup_action(name).set_enabled(not scanning)
         self._update_status()
         self._update_banner()
+        if hasattr(self, "wifi_help"):
+            self._show_view()
 
     def _scan_failed(self, message):
         self._set_scanning(False)

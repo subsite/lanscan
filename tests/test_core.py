@@ -1,6 +1,7 @@
 import ipaddress
 import math
 import unittest
+from unittest import mock
 
 import lanscan  # noqa: F401  (sets gi versions)
 import struct
@@ -41,6 +42,14 @@ NET = ipaddress.ip_network("192.168.1.0/24")
 
 
 class ScannerTest(unittest.TestCase):
+    def setUp(self):
+        # The commands are only put together here, never run: do not
+        # depend on nmap and pkexec being installed.
+        patcher = mock.patch.object(
+            scanner.shutil, "which", lambda name, **_: f"/usr/bin/{name}")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_parse_discovery(self):
         hosts = scanner.parse_nmap_xml(DISCOVERY_XML)
         self.assertEqual([h.ip for h in hosts], ["192.168.1.1", "192.168.1.10"])
