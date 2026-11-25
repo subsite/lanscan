@@ -1,4 +1,4 @@
-"""lanscan - graphical overview of the devices on your local network."""
+"""LAN Scan - graphical overview of the devices on your local network."""
 
 import gi
 

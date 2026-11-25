@@ -4,7 +4,7 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <!-- Lets polkit remember the password for a few minutes, so
      each scan does not prompt again. Note that it applies to every
-     "pkexec nmap" run from your session, not only those lanscan starts. -->
+     "pkexec nmap" run from your session, not only those LAN Scan starts. -->
 <policyconfig>
   <action id="io.github.subsite.Lanscan.nmap">
     <description>Scan the network with nmap</description>
