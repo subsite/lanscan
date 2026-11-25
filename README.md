@@ -155,6 +155,6 @@ Only scan networks you own or are allowed to scan.
 
 ## Licence
 
-By SubSite, <https://github.com/subsite/lanscan>. LAN Scan is free
-software under the GNU General Public License, version 3 or later;
-see `LICENSE`.
+By SubSite - Fredrik Welander, <https://github.com/subsite/lanscan>.
+LAN Scan is free software under the GNU General Public License,
+version 3 or later; see `LICENSE`.

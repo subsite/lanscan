@@ -26,7 +26,7 @@ build_deb() {
     make install DESTDIR="$root" \
         PYDIR=/usr/lib/python3/dist-packages
     mkdir -p "$root/DEBIAN" "$root/usr/share/doc/lanscan"
-    printf '%s\n' "LAN Scan, by SubSite" \
+    printf '%s\n' "LAN Scan, by SubSite - Fredrik Welander" \
         "Source: https://github.com/subsite/lanscan" \
         "License: GPL-3.0-or-later" \
         "See /usr/share/common-licenses/GPL-3 for the full text." \

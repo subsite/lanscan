@@ -7,7 +7,7 @@ name = "lanscan"
 version = "0.1.0"
 description = "Graphical overview of the devices on your local network"
 license = "GPL-3.0-or-later"
-authors = [{name = "SubSite"}]
+authors = [{name = "SubSite - Fredrik Welander"}]
 urls = {Homepage = "https://github.com/subsite/lanscan"}
 requires-python = ">=3.10"
 dependencies = ["PyGObject>=3.46"]
