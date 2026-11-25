@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lanscan"
-version = "0.1.1"
+version = "0.1.2"
 description = "Graphical overview of the devices on your local network"
 license = "GPL-3.0-or-later"
 authors = [{name = "SubSite - Fredrik Welander"}]
