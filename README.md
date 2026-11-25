@@ -1,4 +1,4 @@
-# lanscan
+# LAN Scan
 
 A graphical overview of the devices on your local network, for the GNOME
 desktop. Discovery and port scanning are done by `nmap`; names and service
