@@ -14,7 +14,7 @@ build_rpm() {
     mkdir -p "$top/SOURCES" "$top/tmp"
     tar --exclude=__pycache__ --transform "s,^,lanscan-$VERSION/," \
         -czf "$top/SOURCES/lanscan-$VERSION.tar.gz" \
-        Makefile README.md pyproject.toml lanscan data packaging
+        Makefile README.md LICENSE pyproject.toml lanscan data packaging
     rpmbuild -bb --define "_topdir $top" \
         --define "_tmppath $top/tmp" \
         --define "version $VERSION" packaging/lanscan.spec
@@ -25,7 +25,12 @@ build_deb() {
     root=$WORK/deb
     make install DESTDIR="$root" \
         PYDIR=/usr/lib/python3/dist-packages
-    mkdir -p "$root/DEBIAN"
+    mkdir -p "$root/DEBIAN" "$root/usr/share/doc/lanscan"
+    printf '%s\n' "LAN Scan, by SubSite" \
+        "Source: https://github.com/subsite/lanscan" \
+        "License: GPL-3.0-or-later" \
+        "See /usr/share/common-licenses/GPL-3 for the full text." \
+        > "$root/usr/share/doc/lanscan/copyright"
     sed "s/@VERSION@/$VERSION/" packaging/control.in \
         > "$root/DEBIAN/control"
     dpkg-deb --root-owner-group --build "$root" \

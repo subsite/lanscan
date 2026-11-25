@@ -27,7 +27,8 @@ if ! grep -q "release version=\"$VERSION\"" "$META"; then
         "$META"
 fi
 git add lanscan/__init__.py pyproject.toml "$META"
-git commit -m "Release $VERSION"
+# Nothing changes when the files already say this version.
+git diff --cached --quiet || git commit -m "Release $VERSION"
 git tag -a "v$VERSION" -m "LAN Scan $VERSION"
 
 echo

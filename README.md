@@ -152,3 +152,9 @@ the `LANSCAN_DB` environment variable).
     python3 -m unittest discover -s tests
 
 Only scan networks you own or are allowed to scan.
+
+## Licence
+
+By SubSite, <https://github.com/subsite/lanscan>. LAN Scan is free
+software under the GNU General Public License, version 3 or later;
+see `LICENSE`.

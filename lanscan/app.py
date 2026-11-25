@@ -3,9 +3,9 @@
 import sys
 import threading
 
-from gi.repository import Adw, Gio, GLib
+from gi.repository import Adw, Gio, GLib, Gtk
 
-from . import APP_ID, APP_NAME, __version__, scanner
+from . import APP_ID, APP_NAME, WEBSITE, __version__, scanner
 from .store import Store
 from .window import Window
 
@@ -57,6 +57,9 @@ class Application(Adw.Application):
             application_icon="network-workgroup-symbolic",
             comments="A graphical overview of the devices on your network. "
                      "Scanning is done by nmap.",
+            developer_name="SubSite", website=WEBSITE,
+            issue_url=WEBSITE + "/issues", copyright="© 2026 SubSite",
+            license_type=Gtk.License.GPL_3_0,
         ).present(self.get_active_window())
 
 

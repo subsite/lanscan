@@ -4,8 +4,9 @@
   <name>LAN Scan</name>
   <summary>See the devices on your networks</summary>
   <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
   <developer id="io.github.subsite">
-    <name>subsite</name>
+    <name>SubSite</name>
   </developer>
   <description>
     <p>
@@ -19,6 +20,7 @@
       <li>Port scans with links to web interfaces</li>
       <li>Remembers devices and flags new ones</li>
       <li>Handles several networks: LAN, WireGuard, Docker</li>
+      <li>Wi-Fi networks in range, and the devices on them</li>
     </ul>
   </description>
   <launchable type="desktop-id">io.github.subsite.Lanscan.desktop</launchable>

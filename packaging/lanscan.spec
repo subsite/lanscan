@@ -6,8 +6,7 @@ Name:           lanscan
 Version:        %{version}
 Release:        1%{?dist}
 Summary:        Graphical overview of the devices on your networks
-# No licence has been chosen for the project yet.
-License:        LicenseRef-Not-Specified
+License:        GPL-3.0-or-later
 URL:            https://github.com/subsite/lanscan
 Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
@@ -49,6 +48,7 @@ operating system.
 desktop-file-validate %{buildroot}%{_datadir}/applications/%{app_id}.desktop
 
 %files
+%license LICENSE
 %doc README.md
 %{_bindir}/lanscan
 %{python3_sitelib}/lanscan/
