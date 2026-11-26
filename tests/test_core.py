@@ -256,6 +256,74 @@ class ScannerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             scanner.portscan_cmd(["--script=x"], False)
 
+    def test_scan_modes(self):
+        normal = scanner.discovery_cmd(NET, False)
+        gentle = scanner.discovery_cmd(NET, False, mode=scanner.GENTLE)
+        self.assertIn("-T4", normal)
+        self.assertNotIn("-T4", gentle)
+        self.assertNotIn(
+            "-T4", scanner.discovery_cmd(NET, True, mode=scanner.DISCOVERY))
+        ips = ["192.168.1.5"]
+        cmd = scanner.portscan_cmd(ips, True, True, mode=scanner.GENTLE)
+        # No root, no OS detection, no full scan, no probes or scripts.
+        self.assertEqual(cmd[0], "/usr/bin/nmap")
+        for flag in ("-O", "-sS", "-p-", "-sV", "--script", "-T4"):
+            self.assertNotIn(flag, cmd)
+        self.assertEqual(cmd[cmd.index("--top-ports") + 1], "100")
+        self.assertEqual(cmd[-1], "192.168.1.5")
+        with self.assertRaises(scanner.ScanError):
+            scanner.portscan_cmd(ips, False, mode=scanner.DISCOVERY)
+        with self.assertRaises(ValueError):
+            scanner.portscan_cmd(["-iL"], False, mode=scanner.GENTLE)
+
+    def test_gentle_port_scan_skips_snmp(self):
+        xml = PORTS_XML
+        with mock.patch.object(scanner, "run", lambda *a: xml), \
+                mock.patch.object(scanner.osguess, "snmp_sysdescr",
+                                  lambda ip: "Linux box") as _snmp:
+            gentle = scanner.scan_ports(["192.168.1.5"], False,
+                                        mode=scanner.GENTLE)
+            normal = scanner.scan_ports(["192.168.1.5"], False)
+        self.assertEqual(gentle[0].service_os, "")
+        self.assertEqual(normal[0].service_os, "Linux box")
+
+    def test_network_identity(self):
+        lan = ipaddress.ip_network("192.168.1.0/24")
+        wg = ipaddress.ip_network("192.168.11.0/24")
+        far = ipaddress.ip_network("10.20.0.0/24")
+        routes = [
+            {"dst": "default", "gateway": "192.168.1.1", "dev": "enp1s0"},
+            {"dst": "192.168.1.0/24", "dev": "enp1s0"},
+            {"dst": "192.168.11.0/24", "dev": "wg0"},
+            {"dst": "10.20.0.0/16", "gateway": "192.168.1.9",
+             "dev": "enp1s0"}]
+        neigh = {"192.168.1.1": "AA:BB:CC:00:00:01",
+                 "192.168.1.9": "AA:BB:CC:00:00:09"}
+        home = netinfo.identify_network(lan, routes, neigh)
+        self.assertEqual(home["key"], "192.168.1.0/24 via AA:BB:CC:00:00:01")
+        self.assertEqual((home["dev"], home["gateway"]),
+                         ("enp1s0", "192.168.1.1"))
+        # The same addresses behind another router are another network.
+        cafe = netinfo.identify_network(
+            lan, routes, {"192.168.1.1": "DD:EE:FF:00:00:01"})
+        self.assertNotEqual(cafe["key"], home["key"])
+        self.assertEqual(
+            netinfo.identify_network(wg, routes, neigh)["key"],
+            "192.168.11.0/24 on wg0")
+        self.assertEqual(
+            netinfo.identify_network(far, routes, neigh)["key"],
+            "10.20.0.0/24 via AA:BB:CC:00:00:09")
+        # Not routed anywhere specific: through the default gateway.
+        other = netinfo.identify_network(
+            ipaddress.ip_network("172.31.0.0/24"), routes, neigh)
+        self.assertEqual(other["key"], "172.31.0.0/24 via AA:BB:CC:00:00:01")
+        # Gateway not in the neighbour table yet: fall back to the link.
+        self.assertEqual(
+            netinfo.identify_network(lan, routes, {})["key"],
+            "192.168.1.0/24 on enp1s0")
+        self.assertEqual(
+            netinfo.identify_network(lan, [], {})["key"], "192.168.1.0/24")
+
     def test_networks(self):
         routes = [
             {"dst": "default", "gateway": "192.168.1.1", "dev": "wlp2s0"},

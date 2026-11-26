@@ -119,6 +119,69 @@ def route_gateways():
     return parse_route_gateways(_ip_json("-4", "route", "show"))
 
 
+def identify_network(network, routes, neigh):
+    """What tells `network` apart from another network with the same
+    addresses (192.168.1.0/24 is in many homes and cafés): the MAC
+    address of its gateway, or else the interface it is reached on.
+
+    `routes` is the output of `ip -j -4 route show`, `neigh` maps IP
+    addresses to MAC addresses. Returns a dict with key, network, dev,
+    gateway and mac."""
+    dev, route = "", None
+    for entry in routes:
+        dst = entry.get("dst")
+        if not dst or dst == "default":
+            continue
+        try:
+            covered = network.subnet_of(ipaddress.ip_network(
+                dst, strict=False))
+        except (TypeError, ValueError):
+            continue
+        if not covered:
+            continue
+        if not entry.get("gateway") and not dev:
+            dev = entry.get("dev", "")  # attached directly
+        elif entry.get("gateway") and route is None:
+            route = entry  # reached through a router
+    default = next(
+        (r for r in routes if r.get("dst") == "default"
+         and r.get("gateway")), None)
+    gateway = ""
+    if dev:
+        # A router on the same link, preferably the way to the internet.
+        for entry in [default] + list(routes):
+            gw = (entry or {}).get("gateway")
+            if gw and entry.get("dev") == dev and _within(gw, network):
+                gateway = gw
+                break
+    else:
+        route = route or default
+        if route:
+            dev, gateway = route.get("dev", ""), route.get("gateway", "")
+    mac = neigh.get(gateway, "") if gateway else ""
+    if mac:
+        key = f"{network} via {mac}"
+    elif dev:
+        key = f"{network} on {dev}"
+    else:
+        key = str(network)
+    return {"key": key, "network": network, "dev": dev,
+            "gateway": gateway, "mac": mac}
+
+
+def _within(ip, network):
+    try:
+        return ipaddress.ip_address(ip) in network
+    except ValueError:
+        return False
+
+
+def identify_networks(networks):
+    routes = _ip_json("-4", "route", "show")
+    neigh = neighbours()
+    return [identify_network(n, routes, neigh) for n in networks]
+
+
 _FRESH = {"REACHABLE", "DELAY", "PROBE"}
 
 

@@ -28,6 +28,7 @@ class DetailPane(Gtk.Box):
         self._on_scan_ports = on_scan_ports
         self._on_forget = on_forget
         self._wifi_for = wifi_for
+        self.ports_allowed = True  # false in Discovery Only mode
         self._port_rows = []
 
         header = Adw.HeaderBar(
@@ -189,7 +190,11 @@ class DetailPane(Gtk.Box):
                 link.add_css_class("caption")
                 row.add_suffix(link)
             self._add_port_row(row)
-        self._scan_btn.set_sensitive(dev.online and not dev.scanning)
+        self._scan_btn.set_sensitive(
+            dev.online and not dev.scanning and self.ports_allowed)
+        self._scan_btn.set_tooltip_text(
+            None if self.ports_allowed
+            else "Port scans are off in Discovery Only mode")
         self._known_btn.set_visible(not dev.known)
         self._loading = False
 

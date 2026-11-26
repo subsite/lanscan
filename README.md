@@ -48,6 +48,33 @@ Each network's gateway is taken from the routing table. For a network
 without one there (WireGuard, typically) a ping limited to one hop is
 sent towards a few of its hosts: the hub in between, if any, answers.
 
+## How hard it scans
+
+The main menu sets how hard LAN Scan probes, and remembers it:
+
+- **Normal Scans**: everything described here. nmap runs with its
+  fast timing (`-T4`), port scans check the 1000 most common ports
+  and identify the services on them, and also ask SMB and SNMP
+  (community `public`) what the device is.
+- **Gentle Scans**: nmap's normal timing, fewer pings at a time, and
+  port scans limited to the 100 most common ports without service
+  probes, scripts or SNMP. Root port scans (OS detection) and scans
+  of all 65535 ports are switched off. Finding devices as root, which
+  only uses ARP, is still possible.
+- **Discovery Only**: finds devices like Gentle Scans, but never
+  port scans them.
+
+Port scans are what network monitoring flags as an attack, so use
+Gentle Scans or Discovery Only on networks that are not yours.
+
+Before the first scan of a network, LAN Scan asks whether it is
+yours. A network is recognised by the MAC address of its gateway (or
+else the interface it is on), so a café that uses the same addresses
+as your home is still a different network. "This Is My Network"
+remembers it; "Scan Gently" scans it once in gentle mode and asks
+again next time. The quiet check at startup leaves networks that are
+not confirmed as yours alone.
+
 ## Wi-Fi
 
 The LAN | Wi-Fi switch in the header picks what the list and the map

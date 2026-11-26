@@ -16,6 +16,14 @@ MAX_ADDRESSES = 65536
 MAX_SWEEP = 1024  # most addresses a non-root scan pings one by one
 SMB_SCRIPT = "/usr/share/nmap/scripts/smb-os-discovery.nse"
 
+# How hard to probe. Gentle uses nmap's normal timing instead of -T4,
+# pings fewer addresses at a time and keeps port scans to the 100 most
+# common ports, without service probes, scripts, SNMP or OS detection.
+# Discovery only scans like gentle and does no port scans at all.
+NORMAL, GENTLE, DISCOVERY = "normal", "gentle", "discovery"
+MODES = (NORMAL, GENTLE, DISCOVERY)
+GENTLE_PORTS = 100
+
 
 class ScanError(Exception):
     pass
@@ -88,18 +96,26 @@ def _base(privileged):
     return [nmap]
 
 
-def discovery_cmd(networks, privileged, ips=None):
+def discovery_cmd(networks, privileged, ips=None, mode=NORMAL):
     """Ping scan of the networks, or of just the given addresses."""
     targets = [str(n) for n in as_networks(networks)]
     if ips:
         targets = [str(ipaddress.IPv4Address(ip)) for ip in ips]
-    return _base(privileged) + ["-sn", "-T4", "-oX", "-", *targets]
+    timing = ["-T4"] if mode == NORMAL else []
+    return _base(privileged) + ["-sn", *timing, "-oX", "-", *targets]
 
 
-def portscan_cmd(ips, privileged, full=False):
+def portscan_cmd(ips, privileged, full=False, mode=NORMAL):
     """Port scan command. `full` scans all 65535 TCP ports instead of
-    nmap's 1000 most common ones."""
+    nmap's 1000 most common ones. Raises ScanError in discovery mode."""
     ips = [str(ipaddress.IPv4Address(ip)) for ip in ips]
+    if mode == DISCOVERY:
+        raise ScanError("Port scans are off in Discovery Only mode")
+    if mode == GENTLE:
+        # Root, a full scan and service probes are all left out.
+        return _base(False) + [
+            "-sT", "--top-ports", str(GENTLE_PORTS), "-Pn", "-oX", "-",
+            *ips]
     if privileged:
         scan = ["-sS", "-O", "--osscan-guess"]
     else:
@@ -452,7 +468,7 @@ def sweep_targets(networks, ips=None):
     return [str(ip) for n in networks for ip in n.hosts()]
 
 
-def add_ping_hosts(hosts, targets, ping=ping_host):
+def add_ping_hosts(hosts, targets, ping=ping_host, workers=64):
     """Add the hosts that answer a ping but that nmap missed.
 
     Without root nmap only tries TCP ports 80 and 443, which a
@@ -462,7 +478,7 @@ def add_ping_hosts(hosts, targets, ping=ping_host):
     found = {h.ip for h in hosts}
     targets = [ip for ip in dict.fromkeys(targets) if ip not in found]
     if targets:
-        with ThreadPoolExecutor(max_workers=64) as pool:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             for ip, (rtt, ttl) in zip(targets, pool.map(ping, targets)):
                 if rtt or ttl:
                     hosts.append(Host(ip=ip, rtt=rtt, ttl=ttl))
@@ -486,7 +502,7 @@ def add_ping_times(hosts, ping=ping_host):
 vendors = netinfo.VendorDb()
 
 
-def discover(networks, privileged, ips=None):
+def discover(networks, privileged, ips=None, mode=NORMAL):
     """Full discovery scan: nmap ping scan plus everything else we can
     learn without root (ARP table, mDNS, UPnP, vendor database).
 
@@ -502,7 +518,7 @@ def discover(networks, privileged, ips=None):
         daemon=True)
     upnp_thread.start()
     try:
-        xml = run(discovery_cmd(networks, privileged, ips))
+        xml = run(discovery_cmd(networks, privileged, ips, mode))
     except ScanError:
         if mdns_proc:
             mdns_proc.kill()
@@ -511,7 +527,8 @@ def discover(networks, privileged, ips=None):
     upnp_thread.join(timeout=15)
     upnp_info = dict(upnp_result)
     if not privileged:
-        add_ping_hosts(hosts, sweep_targets(networks, ips))
+        add_ping_hosts(hosts, sweep_targets(networks, ips),
+                       workers=64 if mode == NORMAL else 8)
         add_neighbour_hosts(
             hosts, netinfo.neighbours(fresh_only=True), networks)
     add_upnp_hosts(hosts, upnp_info, networks)
@@ -522,15 +539,16 @@ def discover(networks, privileged, ips=None):
         finish_mdns(mdns_proc), vendors, upnp_info))
 
 
-def scan_ports(ips, privileged, full=False):
+def scan_ports(ips, privileged, full=False, mode=NORMAL):
     """Port scan one or more hosts; returns Hosts with ports/os set."""
-    timeout = 4 * 3600 if full else 900
+    timeout = 4 * 3600 if full and mode == NORMAL else 900
     hosts = parse_nmap_xml(
-        run(portscan_cmd(ips, privileged, full), timeout))
+        run(portscan_cmd(ips, privileged, full, mode), timeout))
     for host in hosts:
         if host.mac:
             host.vendor = vendors.lookup(host.mac) or host.vendor
-    if hosts:  # devices with SNMP switched on describe themselves
+    if hosts and mode == NORMAL:
+        # Devices with SNMP switched on describe themselves.
         with ThreadPoolExecutor(max_workers=16) as pool:
             for host, text in zip(hosts, pool.map(
                     lambda h: osguess.snmp_sysdescr(h.ip), hosts)):

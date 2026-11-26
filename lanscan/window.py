@@ -1,5 +1,7 @@
 """Main window: header, device list, map and detail pane."""
 
+import ipaddress
+import json
 import os
 import threading
 import time
@@ -66,6 +68,10 @@ class Window(Adw.ApplicationWindow):
         self._local_networks = []
         self._unidentified = []
         self._show_empty_pane = False
+        self._asking = False  # a question about a network is open
+        self.scan_mode = store.get_setting("scan_mode")
+        if self.scan_mode not in scanner.MODES:
+            self.scan_mode = scanner.NORMAL
         self.only_mine = store.get_setting("wifi_only_mine") == "1"
 
         # Devices -> filter -> groups per network -> tree (network,
@@ -103,6 +109,11 @@ class Window(Adw.ApplicationWindow):
             action.connect("activate", callback)
             self.add_action(action)
 
+        action = Gio.SimpleAction.new_stateful(
+            "scan-mode", GLib.VariantType.new("s"),
+            GLib.Variant.new_string(self.scan_mode))
+        action.connect("change-state", self._on_scan_mode)
+        self.add_action(action)
         action = Gio.SimpleAction.new_stateful(
             "wifi-only-mine", None, GLib.Variant.new_boolean(self.only_mine))
         action.connect("change-state", self._on_only_mine)
@@ -144,6 +155,12 @@ class Window(Adw.ApplicationWindow):
             "Deep Wi-Fi Scan (Root, Shows Clients)", "win.wifi-deep")
         section.append("Show Only My Wi-Fi Networks", "win.wifi-only-mine")
         menu.append_section(None, section)
+        section = Gio.Menu()
+        for label, mode in (("Normal Scans", scanner.NORMAL),
+                            ("Gentle Scans", scanner.GENTLE),
+                            ("Discovery Only", scanner.DISCOVERY)):
+            section.append(label, f"win.scan-mode::{mode}")
+        menu.append_section("How Hard to Scan", section)
         section = Gio.Menu()
         section.append("Scan Ports on All Devices", "win.port-scan-all")
         section.append(
@@ -278,6 +295,7 @@ class Window(Adw.ApplicationWindow):
         self.column_view.sort_by_column(
             self._ip_column, Gtk.SortType.ASCENDING)
         self._update_map_networks()
+        self._apply_scan_mode()
         self._sync_pane()
         self._refresh()
         GLib.timeout_add_seconds(30, self._tick)
@@ -665,7 +683,9 @@ class Window(Adw.ApplicationWindow):
                 return
             is_device = service is None
             image.set_visible(is_device)
-            scan.set_visible(not is_device and service.text == NOT_SCANNED)
+            scan.set_visible(
+                not is_device and service.text == NOT_SCANNED
+                and self.scan_mode != scanner.DISCOVERY)
             scan.set_sensitive(dev.online)
             name.set_hexpand(is_device)
             badge.set_visible(is_device and not dev.known)
@@ -879,6 +899,8 @@ class Window(Adw.ApplicationWindow):
         """Suggest a root scan when it would reveal more."""
         unidentified, without_mac = self.store.root_scan_candidates(
             self._local_networks)
+        if self.scan_mode != scanner.NORMAL:
+            unidentified = []  # that would take a root port scan
         self._unidentified = unidentified[:16]
         if self.scanning or not (unidentified or without_mac):
             self.banner.set_revealed(False)
@@ -923,6 +945,9 @@ class Window(Adw.ApplicationWindow):
         in_range = sum(d.online for d in self.store.wifi_devices())
         if in_range:
             parts.append(f"{in_range} on Wi-Fi")
+        if self.scan_mode != scanner.NORMAL:
+            parts.append("gentle scans" if self.scan_mode == scanner.GENTLE
+                         else "discovery only")
         if self.scanning:
             parts.append("scanning…")
         elif self.last_scan:
@@ -971,8 +996,12 @@ class Window(Adw.ApplicationWindow):
             networks = self._targets()
         except scanner.ScanError:
             return False
+        # Never probe a network that is not known to be yours: another
+        # one may use the same addresses.
+        familiar = [n for n in networks if n not in [
+            i["network"] for i in self._unfamiliar(networks)]]
         ips = [d.ip for d in self.store.devices()
-               if scanner.inside(d.ip, networks)]
+               if scanner.inside(d.ip, familiar)]
         if ips or self.wifi_iface:
             self.start_scan(ips=ips, quiet=True)
         return False
@@ -983,7 +1012,7 @@ class Window(Adw.ApplicationWindow):
         for Wi-Fi networks ("wifi"); `scope` overrides that. A quiet
         scan does both, only probes the addresses in `ips` and does not
         announce the result."""
-        if self.scanning:
+        if self.scanning or self._asking:
             return
         if scope is None and not quiet:
             scope = "wifi" if self.wifi_btn.get_active() else "lan"
@@ -1004,13 +1033,24 @@ class Window(Adw.ApplicationWindow):
                 self._toast("Choose a network to scan first")
             return
         self._networks_changed()
+        if lan and not quiet:
+            self._confirm_networks(networks, lambda mode: self._run_scan(
+                networks, privileged, ips, quiet, lan, iface, mode))
+        else:
+            self._run_scan(networks, privileged, ips, quiet, lan, iface,
+                           self.scan_mode)
+
+    def _run_scan(self, networks, privileged, ips, quiet, lan, iface, mode):
+        if self.scanning:
+            return
         self._set_scanning(True)
 
         def work():
             hosts, aps, errors = None, None, []
             if lan:
                 try:
-                    hosts = scanner.discover(networks, privileged, ips)
+                    hosts = scanner.discover(
+                        networks, privileged, ips, mode)
                 except scanner.ScanError as e:
                     errors.append(str(e))
                 except Exception as e:  # never leave the UI on a spinner
@@ -1206,8 +1246,21 @@ class Window(Adw.ApplicationWindow):
     def start_port_scan(self, devices, privileged=False, full=False):
         devices = [d for d in devices if d is not None and d.online
                    and not d.scanning and not d.wifi]
+        if not devices or self._asking:
+            return
+        if self.scan_mode == scanner.DISCOVERY:
+            self._toast("Port scans are off in Discovery Only mode")
+            return
+        self._confirm_networks(
+            self._networks_of(devices), lambda mode: self._run_port_scan(
+                devices, privileged, full, mode))
+
+    def _run_port_scan(self, devices, privileged, full, mode):
+        devices = [d for d in devices if d.online and not d.scanning]
         if not devices:
             return
+        if mode != scanner.NORMAL:
+            privileged = full = False
         for dev in devices:
             dev.scanning = True
             dev.notify_changed()
@@ -1220,7 +1273,7 @@ class Window(Adw.ApplicationWindow):
             for index, chunk in enumerate(chunks):
                 try:
                     hosts = scanner.scan_ports(
-                        [d.ip for d in chunk], privileged, full)
+                        [d.ip for d in chunk], privileged, full, mode)
                 except Exception as e:
                     message = str(e) if isinstance(
                         e, scanner.ScanError) else f"Port scan failed: {e}"
@@ -1232,6 +1285,109 @@ class Window(Adw.ApplicationWindow):
                 GLib.idle_add(self._toast, "Port scan finished")
 
         threading.Thread(target=work, daemon=True).start()
+
+    # ---- scan modes and unfamiliar networks ---------------------------
+
+    def _on_scan_mode(self, action, value):
+        action.set_state(value)
+        self.scan_mode = value.get_string()
+        self.store.set_setting("scan_mode", self.scan_mode)
+        self._apply_scan_mode()
+        for dev in self.store.devices():
+            dev.notify_changed()  # show or hide the port scan buttons
+        self._update_status()
+        self._update_banner()
+
+    def _apply_scan_mode(self):
+        """Switch off what the chosen mode does not allow."""
+        normal = self.scan_mode == scanner.NORMAL
+        for name, allowed in (
+                ("port-scan-root", normal), ("port-scan-all-full", normal),
+                ("port-scan-all", self.scan_mode != scanner.DISCOVERY)):
+            self.lookup_action(name).set_enabled(allowed)
+        self.detail.ports_allowed = self.scan_mode != scanner.DISCOVERY
+        self.detail.update()
+
+    def _trusted(self):
+        try:
+            keys = json.loads(self.store.get_setting("trusted_networks")
+                              or "[]")
+        except ValueError:
+            keys = []
+        return {k for k in keys if isinstance(k, str)}
+
+    def _unfamiliar(self, networks):
+        """The networks among these that were never confirmed as yours."""
+        trusted = self._trusted()
+        return [i for i in netinfo.identify_networks(networks)
+                if i["key"] not in trusted]
+
+    def _networks_of(self, devices):
+        """The networks the devices are on."""
+        found = []
+        for dev in devices:
+            network = next(
+                (n for _name, n in self._named_networks
+                 if scanner.inside(dev.ip, [n])), None)
+            if network is None:
+                network = ipaddress.ip_network(f"{dev.ip}/32")
+            if network not in found:
+                found.append(network)
+        return found
+
+    def _confirm_networks(self, networks, proceed):
+        """Call proceed(mode) right away if all the networks are known
+        to be yours; otherwise ask first."""
+        strange = self._unfamiliar(networks)
+        if not strange:
+            proceed(self.scan_mode)
+            return
+        lines = []
+        for info in strange:
+            line = str(info["network"])
+            if info["dev"]:
+                line += f" on {info['dev']}"
+            if info["gateway"]:
+                vendor = scanner.vendors.lookup(info["mac"]) if (
+                    info["mac"]) else ""
+                line += f", gateway {info['gateway']}"
+                line += f" ({vendor})" if vendor else ""
+            lines.append(line)
+        many = len(strange) > 1
+        gentle = self.scan_mode == scanner.NORMAL
+        dialog = Adw.AlertDialog(
+            heading="Scan Unfamiliar Networks?" if many
+            else "Scan an Unfamiliar Network?",
+            body=("LAN Scan has not scanned "
+                  + ("these networks" if many else "this network")
+                  + " before:\n\n" + "\n".join(lines) + "\n\n"
+                  "Only scan networks you own or are allowed to scan. "
+                  + ("A gentle scan probes less and is less likely to "
+                     "be taken for an attack." if gentle else "")).strip())
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response(
+            "once", "Scan Gently" if gentle else "Scan Once")
+        dialog.add_response(
+            "mine", "These Are My Networks" if many
+            else "This Is My Network")
+        dialog.set_response_appearance(
+            "mine", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def answered(_dialog, response):
+            self._asking = False
+            if response == "mine":
+                keys = self._trusted() | {i["key"] for i in strange}
+                self.store.set_setting(
+                    "trusted_networks", json.dumps(sorted(keys)))
+                proceed(self.scan_mode)
+            elif response == "once":
+                proceed(scanner.GENTLE if gentle else self.scan_mode)
+
+        dialog.connect("response", answered)
+        self._asking = True
+        dialog.present(self)
 
     def _port_scan_done(self, devices, hosts, error):
         by_ip = {h.ip: h for h in hosts}
